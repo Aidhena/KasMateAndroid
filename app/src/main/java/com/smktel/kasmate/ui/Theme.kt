@@ -1,0 +1,82 @@
+package com.smktel.kasmate.ui
+
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
+
+val Red = Color(0xFFE31E24)
+val DeepRed = Color(0xFFB5121B)
+val SoftRed = Color(0xFFFF6B70)
+val AppBackground = Color(0xFFF7F8FA)
+val CardBorder = Color(0xFFEEEEF0)
+
+private val LightColors = lightColorScheme(
+    primary = Red,
+    onPrimary = Color.White,
+    background = AppBackground,
+    onBackground = Color(0xFF171717),
+    surface = Color.White,
+    onSurface = Color(0xFF171717),
+    surfaceVariant = Color(0xFFFFF1F1),
+    onSurfaceVariant = Color(0xFF858585),
+    outline = CardBorder,
+    tertiary = DeepRed,
+    secondary = Color(0xFF2E7D32)
+)
+
+private val DarkColors = darkColorScheme(
+    primary = Red,
+    onPrimary = Color.White,
+    background = Color(0xFF111216),
+    onBackground = Color(0xFFF4F4F5),
+    surface = Color(0xFF191A20),
+    onSurface = Color(0xFFF4F4F5),
+    surfaceVariant = Color(0xFF24252C),
+    onSurfaceVariant = Color(0xFFB3B3BA),
+    outline = Color(0xFF34353C),
+    tertiary = Color(0xFFFF8A80),
+    secondary = Color(0xFF81C784)
+)
+
+val BigShape = RoundedCornerShape(24.dp)
+
+@Composable
+fun KasTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit
+) {
+    val fontFamily = FontFamily.SansSerif
+    val typography = MaterialTheme.typography.let { base ->
+        androidx.compose.material3.Typography(
+            displayLarge = base.displayLarge.copy(fontFamily = fontFamily, fontWeight = FontWeight.ExtraBold, letterSpacing = (-.7).sp),
+            displayMedium = base.displayMedium.copy(fontFamily = fontFamily, fontWeight = FontWeight.Bold, letterSpacing = (-.45).sp),
+            headlineLarge = base.headlineLarge.copy(fontFamily = fontFamily, fontWeight = FontWeight.Bold, letterSpacing = (-.4).sp),
+            headlineMedium = base.headlineMedium.copy(fontFamily = fontFamily, fontWeight = FontWeight.Bold, letterSpacing = (-.3).sp),
+            titleLarge = base.titleLarge.copy(fontFamily = fontFamily, fontWeight = FontWeight.Bold, letterSpacing = (-.25).sp),
+            titleMedium = base.titleMedium.copy(fontFamily = fontFamily, fontWeight = FontWeight.SemiBold, letterSpacing = (-.1).sp),
+            bodyLarge = TextStyle(fontFamily = fontFamily, fontSize = 16.sp, lineHeight = 24.sp, letterSpacing = .05.sp),
+            bodyMedium = TextStyle(fontFamily = fontFamily, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = .05.sp),
+            bodySmall = TextStyle(fontFamily = fontFamily, fontSize = 12.sp, lineHeight = 16.sp),
+            labelLarge = base.labelLarge.copy(fontFamily = fontFamily),
+            labelMedium = base.labelMedium.copy(fontFamily = fontFamily),
+            labelSmall = base.labelSmall.copy(fontFamily = fontFamily)
+        )
+    }
+    MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors, typography = typography) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            content()
+        }
+    }
+}
