@@ -34,6 +34,7 @@ import com.smktel.kasmate.notif.cancelServerNotificationSync
 import com.smktel.kasmate.notif.createChannel
 import com.smktel.kasmate.notif.PREF_FCM_INSTALLATION_ID
 import com.smktel.kasmate.notif.registerPushDevice
+import com.smktel.kasmate.notif.scheduleDailyReminder
 import com.smktel.kasmate.notif.scheduleServerNotificationSync
 import com.smktel.kasmate.notif.syncServerNotifications
 import com.smktel.kasmate.notif.unregisterPushDevice
@@ -41,6 +42,7 @@ import com.smktel.kasmate.ui.AppLanguage
 import com.smktel.kasmate.ui.HomeScreen
 import com.smktel.kasmate.ui.KasTheme
 import com.smktel.kasmate.ui.LoginScreen
+import com.smktel.kasmate.ui.WelcomeScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -97,6 +99,7 @@ class MainActivity : ComponentActivity() {
             }
             var activeSession by remember { mutableStateOf<ActiveStudentSession?>(null) }
             var paymentRequests by remember { mutableStateOf(emptyList<StudentPaymentRequest>()) }
+            var hasSeenWelcome by remember { mutableStateOf(prefs.getBoolean("welcome_seen", false)) }
             var isRestoringSession by remember { mutableStateOf(true) }
             var isSigningIn by remember { mutableStateOf(false) }
             var authError by remember { mutableStateOf<String?>(null) }
@@ -127,6 +130,7 @@ class MainActivity : ComponentActivity() {
                         registerPushDevice(applicationContext)
                         activeSession = ActiveStudentSession(token, client.baseUrl, remote.profile, remote.summary)
                         serverAddress = client.baseUrl
+                        scheduleDailyReminder(applicationContext)
                     } catch (exception: Exception) {
                         if (exception is KasMateApiException && exception.statusCode == 401) {
                             prefs.edit().remove(PREF_STUDENT_TOKEN).apply()
@@ -171,6 +175,10 @@ class MainActivity : ComponentActivity() {
                             CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                         }
                     }
+                    session == null && !hasSeenWelcome -> WelcomeScreen {
+                        prefs.edit().putBoolean("welcome_seen", true).apply()
+                        hasSeenWelcome = true
+                    }
                     session == null -> LoginScreen(
                         initialServerAddress = serverAddress,
                         isLoading = isSigningIn,
@@ -209,6 +217,7 @@ class MainActivity : ComponentActivity() {
                                             remote.profile,
                                             remote.summary
                                         )
+                                        scheduleDailyReminder(applicationContext)
                                     } catch (exception: Exception) {
                                         authError = errorFor(exception)
                                     } finally {
@@ -268,6 +277,8 @@ class MainActivity : ComponentActivity() {
                                     } catch (exception: Exception) {
                                         if (exception is KasMateApiException && exception.statusCode == 401) {
                                             cancelServerNotificationSync(this@MainActivity, current.profile.id)
+                                            cancelLegacyDailyReminder(applicationContext)
+                                            prefs.edit().putLong("overdue_amount", 0L).putInt("overdue_days", 0).apply()
                                             prefs.edit().remove(PREF_STUDENT_TOKEN).apply()
                                             activeSession = null
                                             authError = "Sesi berakhir. Silakan masuk kembali."
@@ -292,6 +303,8 @@ class MainActivity : ComponentActivity() {
                             val signedIn = activeSession
                             val installationId = prefs.getString(PREF_FCM_INSTALLATION_ID, null)
                             activeSession = null
+                            cancelLegacyDailyReminder(applicationContext)
+                            prefs.edit().putLong("overdue_amount", 0L).putInt("overdue_days", 0).apply()
                             prefs.edit()
                                 .remove(PREF_STUDENT_TOKEN)
                                 .remove(PREF_FCM_INSTALLATION_ID)

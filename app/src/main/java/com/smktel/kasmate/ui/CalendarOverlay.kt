@@ -195,7 +195,7 @@ private fun CalendarMonthPane(
                         val today = dateKey(System.currentTimeMillis()) == key
                         Box(Modifier.weight(1f).aspectRatio(1f).padding(2.dp)
                             .clip(RoundedCornerShape(15.dp))
-                            .background(if (selected) Red else if (noteForDay.isNotEmpty()) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
+                            .background(if (selected) Red else if (noteForDay.isNotEmpty()) Color(noteForDay.first().color).copy(alpha = .9f) else Color.Transparent)
                             .then(if (today && !selected) Modifier.border(1.dp, Red.copy(alpha = .55f), RoundedCornerShape(15.dp)) else Modifier)
                             .clickable { onSelectDay(millis) }, contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -237,7 +237,7 @@ private fun CalendarDaySidebar(
     val dayNotes = notes.filter { it.dateKey == key }
     val locale = if (english) Locale.US else Locale("id", "ID")
     val title = remember(dayMillis, locale) { SimpleDateFormat("EEEE, d MMMM yyyy", locale).format(Date(dayMillis)) }
-    Column(modifier.fillMaxHeight().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .72f)).verticalScroll(rememberScrollState()).padding(18.dp)) {
+    Column(modifier.fillMaxHeight().background(MaterialTheme.colorScheme.surface).verticalScroll(rememberScrollState()).padding(18.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(if (english) Icons.Default.ArrowBack else Icons.Default.ArrowBack, if (english) "Back to calendar" else "Kembali ke kalender") }
             Text(if (english) "Day details" else "Detail hari", fontWeight = FontWeight.Bold, fontSize = 17.sp)
@@ -253,11 +253,11 @@ private fun CalendarDaySidebar(
             }
         }
         dayNotes.forEach { note ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(16.dp)).background(Color(note.color).copy(alpha = if (MaterialTheme.colorScheme.background == Color(0xFF111216)) .28f else .72f)).padding(start = 11.dp, end = 5.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(16.dp)).background(Color(note.color)).padding(start = 11.dp, end = 5.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(4.dp).height(36.dp).clip(CircleShape).background(Color(note.color)))
                 Spacer(Modifier.width(9.dp))
                 Text(note.text, Modifier.weight(1f), maxLines = 4, overflow = TextOverflow.Ellipsis,
-                    color = if (note.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                    color = if (note.done) Color(0xFF5E5962) else Color(0xFF252128),
                     fontSize = 13.sp, fontWeight = FontWeight.Medium)
                 IconButton(onClick = { onToggle(note) }) { Icon(if (note.done) Icons.Default.Check else Icons.Default.Check, null, tint = if (note.done) Color(0xFF168A62) else MaterialTheme.colorScheme.onSurfaceVariant) }
                 IconButton(onClick = { onDelete(note) }) { Icon(Icons.Default.DeleteOutline, null, tint = Red) }

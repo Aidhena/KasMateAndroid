@@ -1,6 +1,7 @@
 package com.smktel.kasmate.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -10,6 +11,8 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -75,8 +78,27 @@ fun KasTheme(
         )
     }
     MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors, typography = typography) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            content()
+        val background = if (darkTheme) {
+            Brush.linearGradient(
+                colors = listOf(Color(0xFF111216), Color(0xFF1B1316), Color(0xFF111216)),
+                start = Offset.Zero,
+                end = Offset(0f, 1400f)
+            )
+        } else {
+            Brush.linearGradient(
+                colors = listOf(Color(0xFFF7F8FA), Color(0xFFFFF7F5), Color(0xFFF7F8FA)),
+                start = Offset.Zero,
+                end = Offset(0f, 1400f)
+            )
+        }
+        androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(background)) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = Color.Transparent,
+                contentColor = MaterialTheme.colorScheme.onBackground
+            ) {
+                content()
+            }
         }
     }
 }

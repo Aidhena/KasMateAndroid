@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -22,7 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.IconButton
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
@@ -46,12 +47,18 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.foundation.Image
 import com.smktel.kasmate.R
 
@@ -93,13 +100,18 @@ private fun AuthField(
     label: String,
     password: Boolean = false,
     icon: ImageVector? = null,
-    keyboardType: KeyboardType = if (password) KeyboardType.Password else KeyboardType.Text
+    keyboardType: KeyboardType = if (password) KeyboardType.Password else KeyboardType.Text,
+    onPasswordVisibility: (Boolean) -> Unit = {}
 ) {
     var visible by remember { mutableStateOf(false) }
     val trailing: (@Composable () -> Unit)? = if (password) {
         {
-            TextButton(onClick = { visible = !visible }) {
-                Text(if (visible) "Sembunyi" else "Lihat", color = Red)
+            IconButton(onClick = { visible = !visible; onPasswordVisibility(visible) }) {
+                Icon(
+                    if (visible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                    contentDescription = if (visible) "Sembunyikan password" else "Tampilkan password",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     } else null
@@ -151,6 +163,14 @@ fun LoginScreen(
     var nis by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var validationError by remember { mutableStateOf<String?>(null) }
+    var peeking by remember { mutableStateOf(false) }
+    val floatTransition = rememberInfiniteTransition(label = "login mascot float")
+    val floatY by floatTransition.animateFloat(
+        initialValue = -5f,
+        targetValue = 5f,
+        animationSpec = infiniteRepeatable(tween(1300), RepeatMode.Reverse),
+        label = "float"
+    )
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         AuthHeader("KasMate", "Keuangan kelas, lebih transparan")
@@ -161,11 +181,29 @@ fun LoginScreen(
             shadowElevation = 3.dp
         ) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Text("Masuk sebagai siswa", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                Text("Gunakan akun yang diberikan admin kelas.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Text("Selamat datang kembali", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                Text("Masuk untuk melihat tagihan dan kabar kas kelas.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 AuthField(studentName, { studentName = it; validationError = null }, "Nama siswa", icon = Icons.Default.Person)
                 AuthField(nis, { nis = it; validationError = null }, "NIS (opsional, jika nama sama)", keyboardType = KeyboardType.Number)
-                AuthField(password, { password = it }, "Password", password = true, icon = Icons.Default.Lock)
+                Box(Modifier.fillMaxWidth().height(108.dp), contentAlignment = Alignment.Center) {
+                    Image(
+                        painter = painterResource(
+                            if (password.isNotEmpty() && !peeking) R.drawable.kasmate_mascot_sad
+                            else R.drawable.kasmate_mascot_neutral
+                        ),
+                        contentDescription = "Maskot KasMate",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(104.dp).graphicsLayer { translationY = floatY }
+                    )
+                }
+                AuthField(
+                    password,
+                    { password = it },
+                    "Password",
+                    password = true,
+                    icon = Icons.Default.Lock,
+                    onPasswordVisibility = { peeking = it }
+                )
                 (validationError ?: errorMessage)?.let { Text(it, color = MaterialTheme.colorScheme.tertiary, fontSize = 13.sp) }
                 AuthButton(if (isLoading) "MENGHUBUNGKAN..." else "MASUK", enabled = !isLoading) {
                     validationError = when {
@@ -178,5 +216,31 @@ fun LoginScreen(
                 Text("Akun siswa dibuat oleh admin/bendahara. Password awal: 12345678.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             }
         }
+    }
+}
+
+@Composable
+fun WelcomeScreen(onGetStarted: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(26.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(Modifier.weight(.7f))
+        Image(
+            painterResource(R.drawable.kasmate_finance_wallet),
+            contentDescription = "KasMate",
+            modifier = Modifier.fillMaxWidth().height(270.dp),
+            contentScale = ContentScale.Fit
+        )
+        Spacer(Modifier.height(28.dp))
+        Text("Welcome to KasMate", fontSize = 29.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onBackground)
+        Text(
+            "Kelola kas kelas dengan lebih transparan, praktis, dan tenang.",
+            modifier = Modifier.padding(top = 10.dp, bottom = 28.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 14.sp
+        )
+        AuthButton("GET STARTED", onClick = onGetStarted)
+        Spacer(Modifier.weight(1f))
     }
 }

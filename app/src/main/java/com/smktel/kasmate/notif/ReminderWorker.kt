@@ -8,6 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.media.AudioAttributes
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -25,8 +27,10 @@ import com.smktel.kasmate.data.KasMateApiException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.TimeUnit
+import java.text.NumberFormat
+import java.util.Locale
 
-const val CHANNEL_ID = "kas_channel"
+const val CHANNEL_ID = "kas_reminder_v2"
 
 private const val NOTIFICATION_PREFERENCES = "kasmate_server_notifications"
 private const val LAST_NOTIFICATION_PREFIX = "last_notification_id_"
@@ -42,7 +46,11 @@ private val notificationDeliveryLock = Any()
 
 fun createChannel(ctx: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-    val ch = NotificationChannel(CHANNEL_ID, "Uang Kas", NotificationManager.IMPORTANCE_DEFAULT)
+    val ch = NotificationChannel(CHANNEL_ID, "Pengingat uang kas", NotificationManager.IMPORTANCE_HIGH).apply {
+        description = "Pengingat jumlah tunggakan dan tenggat uang kas kelas"
+        setSound(Settings.System.DEFAULT_NOTIFICATION_URI, AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).build())
+        enableVibration(true)
+    }
     ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
 }
 
@@ -68,6 +76,9 @@ fun notify(ctx: Context, id: Int, title: String, text: String) {
         .setStyle(NotificationCompat.BigTextStyle().bigText(text))
         .setContentIntent(pendingIntent)
         .setOnlyAlertOnce(true)
+        .setDefaults(NotificationCompat.DEFAULT_ALL)
+        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setCategory(NotificationCompat.CATEGORY_REMINDER)
         .setAutoCancel(true)
         .build()
     NotificationManagerCompat.from(ctx).notify(id, notification)
@@ -187,7 +198,28 @@ class ServerNotificationWorker(context: Context, parameters: WorkerParameters) :
 /** Keeps already-enqueued work from older installs loadable until the app cancels it. */
 class ReminderWorker(context: Context, parameters: WorkerParameters) :
     CoroutineWorker(context, parameters) {
-    override suspend fun doWork(): Result = Result.success()
+    override suspend fun doWork(): Result {
+        val prefs = applicationContext.getSharedPreferences("kasmate_preferences", Context.MODE_PRIVATE)
+        val amount = prefs.getLong("overdue_amount", 0L)
+        if (amount <= 0L) return Result.success()
+        val english = prefs.getString("language", "INDONESIAN") == "ENGLISH"
+        val number = NumberFormat.getInstance(if (english) Locale.US else Locale("id", "ID")).format(amount)
+        val days = prefs.getInt("overdue_days", 1)
+        val title = if (english) "KasMate reminder" else "Pengingat KasMate"
+        val message = if (english) {
+            "Your class dues of $number rupiah are overdue by $days ${if (days == 1) "day" else "days"}. Let's settle them today!"
+        } else {
+            "Tunggakan kasmu Rp $number sudah lewat $days hari. Yuk, bereskan hari ini!"
+        }
+        notify(applicationContext, 1, title, message)
+        return Result.success()
+    }
+}
+
+fun scheduleDailyReminder(context: Context) {
+    val request = PeriodicWorkRequestBuilder<ReminderWorker>(1, TimeUnit.DAYS).build()
+    WorkManager.getInstance(context)
+        .enqueueUniquePeriodicWork("kas_reminder", ExistingPeriodicWorkPolicy.KEEP, request)
 }
 
 private fun workName(studentId: Long) = "kas_server_notifications_$studentId"
