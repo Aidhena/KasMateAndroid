@@ -337,7 +337,7 @@ class KasMateApiClient(address: String) {
                 throw IllegalArgumentException("Alamat server tidak valid.")
             }
             if ((uri.scheme != "http" && uri.scheme != "https") || uri.host.isNullOrBlank()) {
-                throw IllegalArgumentException("Gunakan IP server seperti 192.168.18.9 atau alamat http/https.")
+                throw IllegalArgumentException("Gunakan IP server seperti 10.199.241.182 atau alamat http/https.")
             }
             var path = uri.rawPath.orEmpty().trimEnd('/')
             if (path.isBlank() || path == "/") path = "/KasMateAPI"
