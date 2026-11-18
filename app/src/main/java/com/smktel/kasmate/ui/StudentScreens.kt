@@ -245,27 +245,41 @@ fun StudentPaymentScreen(
                     Text(rupiah(chosenBill!!.amountDue), fontWeight = FontWeight.ExtraBold, color = Red, fontSize = 22.sp)
                     Text(if (english) "Choose a method" else "Pilih metode pembayaran", fontSize = 13.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("QRIS" to "QRIS", "TF" to "Transfer / e-wallet", "TUNAI" to "Tunai").forEach { (code, label) ->
+                        listOf("QRIS" to "QRIS", "TF" to "E-Wallet", "TUNAI" to "Tunai").forEach { (code, label) ->
                             FilterChip(selected = method == code, onClick = { method = code }, label = { Text(label, fontSize = 11.sp) })
                         }
                     }
-                    Text(if (english) "Choose the payment method and attach a proof image for the class administrator to review." else "Pilih metode pembayaran dan lampirkan foto bukti untuk diperiksa admin kelas.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (english) "Choose a method and attach its proof for your class administrator to review."
+                        else "Pilih metode dan lampirkan bukti pembayaran untuk diperiksa admin kelas.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     OutlinedButton(onClick = { proofPicker.launch(arrayOf("image/jpeg", "image/png", "image/webp", "application/pdf")) }, modifier = Modifier.fillMaxWidth(), enabled = !isSubmitting) {
                         Icon(Icons.Default.AttachFile, null)
                         Spacer(Modifier.width(8.dp))
-                        Text(if (proof == null) if (english) "Attach proof file (required)" else "Lampirkan bukti pembayaran (wajib)" else if (english) "Change proof file" else "Ganti file bukti")
+                        Text(
+                            if (proof == null) {
+                                if (english) "Attach payment proof" else "Lampirkan bukti pembayaran"
+                            } else {
+                                if (english) "Change proof file" else "Ganti bukti pembayaran"
+                            }
+                        )
                     }
                     proofFile?.let { file ->
                         Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f)).padding(10.dp),
+                            Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             PaymentProofFileIcon(file.type)
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                Text(if (english) "Ready to send for admin review" else "Siap dikirim untuk diperiksa admin", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    if (english) "Proof attached for admin review" else "Bukti terlampir untuk diperiksa admin",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF168A62)
+                                )
                             }
                             IconButton(onClick = { proof = null }, enabled = !isSubmitting) {
                                 Icon(Icons.Default.Close, contentDescription = if (english) "Remove proof" else "Hapus bukti")
@@ -290,9 +304,9 @@ fun StudentPaymentScreen(
                     }
                 }
             }, enabled = !isSubmitting && proof != null, colors = ButtonDefaults.buttonColors(containerColor = Red)) {
-                Text(if (isSubmitting) if (english) "Sending..." else "Mengirim..." else if (english) "Send payment request" else "Kirim permintaan pembayaran")
+                Text(if (isSubmitting) if (english) "Sending..." else "Mengirim..." else if (english) "Submit request" else "Kirim permintaan")
             } },
-            dismissButton = { TextButton(onClick = { showPayment = false }) { Text(if (english) "Cancel" else "Batal") } }
+            dismissButton = { TextButton(onClick = { showPayment = false }, enabled = !isSubmitting) { Text(if (english) "Cancel" else "Batal") } }
         )
     }
     if (showDispute) {
