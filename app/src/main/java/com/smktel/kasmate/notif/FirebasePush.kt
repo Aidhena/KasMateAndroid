@@ -7,6 +7,7 @@ import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.smktel.kasmate.data.KasMateApiClient
+import com.smktel.kasmate.data.KasMateServerConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,7 +17,6 @@ private const val TAG = "KasMatePush"
 private const val APP_PREFERENCES = "kasmate_preferences"
 private const val PREF_API_BASE_URL = "api_base_url"
 private const val PREF_STUDENT_TOKEN = "student_access_token"
-private const val DEFAULT_API_ADDRESS = "10.199.241.182"
 const val PREF_FCM_INSTALLATION_ID = "fcm_installation_id"
 
 /** Registers this signed-in app installation with Firebase when its project config is present. */
@@ -49,8 +49,11 @@ private fun registerInstallationWithServer(context: Context, installationId: Str
 
     val studentToken = preferences.getString(PREF_STUDENT_TOKEN, null).orEmpty()
     if (studentToken.isBlank()) return
-    val serverAddress = preferences.getString(PREF_API_BASE_URL, DEFAULT_API_ADDRESS)
-        ?: DEFAULT_API_ADDRESS
+    val savedAddress = preferences.getString(PREF_API_BASE_URL, null)
+    val serverAddress = KasMateServerConfig.migrateSavedAddress(savedAddress)
+    if (serverAddress != savedAddress) {
+        preferences.edit().putString(PREF_API_BASE_URL, serverAddress).apply()
+    }
 
     CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
         runCatching {

@@ -1,10 +1,17 @@
 package com.smktel.kasmate.ui
 
 import android.net.Uri
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -13,8 +20,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -28,11 +37,13 @@ import android.graphics.BitmapFactory
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,14 +53,13 @@ import com.smktel.kasmate.data.*
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.*
-import android.speech.tts.TextToSpeech
 import kotlinx.coroutines.delay
 
 enum class AppPage { HOME, PAYMENTS, LEDGER, ASSISTANT, SETTINGS, PROFILE }
 enum class AppLanguage { INDONESIAN, ENGLISH }
 
-fun rupiah(n: Long): String = "Rp " + NumberFormat.getInstance(Locale("id", "ID")).format(n)
-fun tanggal(ms: Long): String = SimpleDateFormat("d MMM yyyy", Locale("id", "ID")).format(Date(ms))
+fun rupiah(n: Long): String = "Rp " + NumberFormat.getInstance(Locale.forLanguageTag("id-ID")).format(n)
+fun tanggal(ms: Long): String = SimpleDateFormat("d MMM yyyy", Locale.forLanguageTag("id-ID")).format(Date(ms))
 
 @Composable
 fun HomeScreen(
@@ -59,9 +69,12 @@ fun HomeScreen(
     summary: KasSummary,
     paymentRequests: List<StudentPaymentRequest>,
     onSubmitPayment: (Long, String, Uri?, (String?) -> Unit) -> Unit,
-    onRefresh: () -> Unit,
     darkMode: Boolean,
     onDarkModeChange: (Boolean) -> Unit,
+    font: AppFont,
+    onFontChange: (AppFont) -> Unit,
+    notificationsAllowed: Boolean,
+    onRequestNotifications: () -> Unit,
     language: AppLanguage,
     onLanguageChange: (AppLanguage) -> Unit,
     onLogout: () -> Unit
@@ -71,13 +84,13 @@ fun HomeScreen(
     val calendarPrefs = remember(context) { context.getSharedPreferences("kasmate_preferences", android.content.Context.MODE_PRIVATE) }
     val calendarNotes = remember(calendarPrefs) { mutableStateListOf<CalendarStickyNote>().apply { addAll(readCalendarNotes(calendarPrefs)) } }
     var page by remember { mutableStateOf(AppPage.HOME) }
-    var disputeTickets by remember { mutableStateOf(emptyList<DemoDispute>()) }
     var calendarOpen by remember { mutableStateOf(false) }
     var profileImageUri by remember { mutableStateOf(calendarPrefs.getString("profile_image_uri", null)) }
     val profilePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) { profileImageUri = uri.toString(); calendarPrefs.edit().putString("profile_image_uri", uri.toString()).apply() }
     }
     var paymentCelebration by remember { mutableStateOf(false) }
+    var requestedBillPaymentId by remember { mutableStateOf<String?>(null) }
     var observedPaymentStatuses by remember { mutableStateOf<Map<Long, String>?>(null) }
     var rejectedPaymentNotices by remember { mutableStateOf(emptyList<StudentPaymentRequest>()) }
     val english = language == AppLanguage.ENGLISH
@@ -99,17 +112,62 @@ fun HomeScreen(
         set(Calendar.SECOND, 0)
         set(Calendar.MILLISECOND, 0)
     }.timeInMillis
+    val pendingReviewRequests = paymentRequests.filter { it.status == "PENDING" }
+    val pendingReviewBillIds = pendingReviewRequests.map { it.billStudentId }.toSet()
     val overdueBills = s.myBills.filter {
-        it.amountDue > 0 && it.status != PaymentStatus.PROSES && it.dueDateMillis < startOfToday
+        it.amountDue > 0 && it.status != PaymentStatus.PROSES && it.dueDateMillis < startOfToday &&
+            it.id.toLongOrNull()?.let(pendingReviewBillIds::contains) != true
     }
     val overdueAmount = overdueBills.sumOf { it.amountDue }
     val maxOverdueDays = overdueBills.maxOfOrNull {
         ((startOfToday - it.dueDateMillis) / 86_400_000L).toInt().coerceAtLeast(1)
     } ?: 0
+    val billsToRemind = s.myBills.filter { bill ->
+        bill.amountDue > 0 && bill.status != PaymentStatus.PROSES &&
+            bill.id.toLongOrNull()?.let(pendingReviewBillIds::contains) != true
+    }
+    val reminderBill = billsToRemind.minByOrNull { it.dueDateMillis }
+    val reminderDaysLate = reminderBill?.takeIf { it.dueDateMillis < startOfToday }?.let {
+        ((startOfToday - it.dueDateMillis) / 86_400_000L).toInt().coerceAtLeast(1)
+    } ?: 0
+    val mascotMood = when {
+        paymentCelebration || pendingReviewRequests.isNotEmpty() -> MascotMood.EXCITED
+        reminderDaysLate >= 7 -> MascotMood.ANGRY
+        reminderDaysLate > 0 -> MascotMood.SAD
+        reminderBill != null -> MascotMood.NEUTRAL
+        s.myBills.any { it.status == PaymentStatus.LUNAS } -> MascotMood.HAPPY
+        else -> MascotMood.NEUTRAL
+    }
+    val mascotPhrases = when {
+        paymentCelebration -> listOf(
+            if (english) "Request sent!" else "Permintaan terkirim!",
+            if (english) "Waiting for admin approval" else "Menunggu persetujuan admin"
+        )
+        pendingReviewRequests.isNotEmpty() -> listOf(
+            if (english) "Waiting for admin review" else "Menunggu verifikasi admin",
+            if (english) "Your bill updates after approval" else "Tagihan berubah setelah disetujui"
+        )
+        reminderBill != null && reminderDaysLate > 0 -> listOf(
+            if (english) "Tap to pay" else "Ketuk untuk bayar",
+            if (english) "$reminderDaysLate days overdue" else "Terlambat $reminderDaysLate hari",
+            "${reminderBill.title} · ${rupiah(reminderBill.amountDue)}"
+        )
+        reminderBill != null -> listOf(
+            if (english) "Tap to pay" else "Ketuk untuk bayar",
+            if (english) "${reminderBill.title} is still due" else "${reminderBill.title} belum lunas"
+        )
+        s.myBills.any { it.status == PaymentStatus.LUNAS } -> listOf(
+            if (english) "Tap to check bills" else "Ketuk cek tagihan",
+            if (english) "Your dues are paid!" else "Kas kamu sudah lunas!"
+        )
+        else -> listOf(
+            if (english) "Tap to view bills" else "Ketuk untuk cek tagihan",
+            if (english) "No bills due right now" else "Belum ada tagihan saat ini"
+        )
+    }
     LaunchedEffect(overdueAmount, maxOverdueDays) {
         calendarPrefs.edit().putLong("overdue_amount", overdueAmount).putInt("overdue_days", maxOverdueDays).apply()
     }
-    OverdueVoiceReminder(overdueAmount, english, calendarPrefs)
     LaunchedEffect(page, paymentCelebration) {
         if (page == AppPage.HOME && paymentCelebration) {
             delay(8_000)
@@ -125,43 +183,89 @@ fun HomeScreen(
             }
         },
         bottomBar = {
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
+            BoxWithConstraints(Modifier.fillMaxWidth().navigationBarsPadding()) {
                 val compact = maxWidth < 392.dp
                 val labelSize = if (compact) 10.sp else 11.sp
                 NavigationBar(Modifier.padding(horizontal = 14.dp, vertical = 8.dp).shadow(12.dp, RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)), containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp, windowInsets = WindowInsets(0)) {
-                    NavigationBarItem(page == AppPage.HOME, { page = AppPage.HOME }, icon = { Icon(Icons.Default.Home, if (english) "Home" else "Beranda") }, label = { NavLabel(if (english) "Home" else "Beranda", labelSize) }, colors = navColors())
-                    NavigationBarItem(page == AppPage.PAYMENTS, { page = AppPage.PAYMENTS }, icon = { Icon(Icons.Default.Payments, if (english) "Pay" else "Bayar") }, label = { NavLabel(if (english) "Pay" else "Bayar", labelSize) }, colors = navColors())
-                    NavigationBarItem(page == AppPage.LEDGER, { page = AppPage.LEDGER }, icon = { Icon(Icons.Default.AccountBalance, if (english) "Class ledger" else "Kas kelas") }, label = { NavLabel(if (compact) { if (english) "Class" else "Kas" } else { if (english) "Class" else "Kas kelas" }, labelSize) }, colors = navColors())
-                    NavigationBarItem(page == AppPage.ASSISTANT, { page = AppPage.ASSISTANT }, icon = { Icon(Icons.Default.AutoAwesome, if (english) "Assistant" else "Asisten") }, label = { NavLabel(if (compact) "AI" else if (english) "Assistant" else "Asisten", labelSize) }, colors = navColors())
-                    NavigationBarItem(page == AppPage.SETTINGS, { page = AppPage.SETTINGS }, icon = { Icon(Icons.Default.Settings, if (english) "Settings" else "Pengaturan") }, label = { NavLabel(if (compact) { if (english) "Settings" else "Setelan" } else { if (english) "Settings" else "Pengaturan" }, labelSize) }, colors = navColors())
+                    val selectedPage = if (page == AppPage.PROFILE) AppPage.SETTINGS else page
+                    NavigationBarItem(selectedPage == AppPage.HOME, { page = AppPage.HOME }, icon = { AnimatedNavIcon(selectedPage == AppPage.HOME) { Icon(Icons.Default.Home, if (english) "Home" else "Beranda") } }, label = { NavLabel(if (english) "Home" else "Beranda", labelSize) }, colors = navColors())
+                    NavigationBarItem(selectedPage == AppPage.PAYMENTS, { page = AppPage.PAYMENTS }, icon = { AnimatedNavIcon(selectedPage == AppPage.PAYMENTS) { Icon(Icons.Default.Payments, if (english) "Pay" else "Bayar") } }, label = { NavLabel(if (english) "Pay" else "Bayar", labelSize) }, colors = navColors())
+                    NavigationBarItem(selectedPage == AppPage.LEDGER, { page = AppPage.LEDGER }, icon = { AnimatedNavIcon(selectedPage == AppPage.LEDGER) { Icon(Icons.Default.AccountBalance, if (english) "Class ledger" else "Kas kelas") } }, label = { NavLabel(if (compact) { if (english) "Class" else "Kas" } else { if (english) "Class" else "Kas kelas" }, labelSize) }, colors = navColors())
+                    NavigationBarItem(selectedPage == AppPage.ASSISTANT, { page = AppPage.ASSISTANT }, icon = { AnimatedNavIcon(selectedPage == AppPage.ASSISTANT) { Icon(Icons.Default.AutoAwesome, if (english) "Assistant" else "Asisten") } }, label = { NavLabel(if (compact) "AI" else if (english) "Assistant" else "Asisten", labelSize) }, colors = navColors())
+                    NavigationBarItem(selectedPage == AppPage.SETTINGS, { page = AppPage.SETTINGS }, icon = { AnimatedNavIcon(selectedPage == AppPage.SETTINGS) { Icon(Icons.Default.Settings, if (english) "Settings" else "Pengaturan") } }, label = { NavLabel(if (compact) { if (english) "Settings" else "Setelan" } else { if (english) "Settings" else "Pengaturan" }, labelSize) }, colors = navColors())
                 }
             }
         }
     ) { padding ->
-        Crossfade(targetState = page, modifier = Modifier.padding(padding), label = "page transition") { currentPage ->
-            when (currentPage) {
-                AppPage.HOME -> Dashboard(s, english, userName, paymentCelebration, onRefresh, { page = AppPage.SETTINGS }, { page = AppPage.PAYMENTS }, { page = AppPage.ASSISTANT })
-                AppPage.PAYMENTS -> StudentPaymentScreen(s, english, paymentRequests, disputeTickets,
-                    onSubmitPayment = { billId, method, proofUri, complete ->
-                        onSubmitPayment(billId, method, proofUri) { error ->
-                            if (error == null) paymentCelebration = true
-                            complete(error)
+        val motionEnabled = LocalMotionEnabled.current
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            AnimatedContent(
+                targetState = page,
+                modifier = Modifier.fillMaxSize(),
+                transitionSpec = {
+                    val direction = if (targetState.ordinal >= initialState.ordinal) 1 else -1
+                    val enterMs = if (motionEnabled) 230 else 0
+                    val exitMs = if (motionEnabled) 150 else 0
+                    (fadeIn(tween(enterMs)) + slideInHorizontally(tween(enterMs)) { direction * it / 14 }) togetherWith
+                        (fadeOut(tween(exitMs)) + slideOutHorizontally(tween(exitMs)) { -direction * it / 18 })
+                },
+                label = "page transition"
+            ) { currentPage ->
+                when (currentPage) {
+                    AppPage.HOME -> Dashboard(
+                        s,
+                        paymentRequests,
+                        english,
+                        userName,
+                        paymentCelebration,
+                        openSettings = { page = AppPage.SETTINGS },
+                        openPayments = { page = AppPage.PAYMENTS },
+                        openLedger = { page = AppPage.LEDGER },
+                        openAssistant = { page = AppPage.ASSISTANT }
+                    )
+                    AppPage.PAYMENTS -> StudentPaymentScreen(
+                        summary = s,
+                        english = english,
+                        requests = paymentRequests,
+                        initialBillId = requestedBillPaymentId,
+                        onInitialBillHandled = { requestedBillPaymentId = null },
+                        onSubmitPayment = { billId, method, proofUri, complete ->
+                            onSubmitPayment(billId, method, proofUri) { error ->
+                                if (error == null) paymentCelebration = true
+                                complete(error)
+                            }
+                        })
+                    AppPage.LEDGER -> StudentLedgerScreen(
+                        summary = s,
+                        english = english,
+                        requests = paymentRequests,
+                        onPayIuran = { billId ->
+                            requestedBillPaymentId = billId
+                            page = AppPage.PAYMENTS
                         }
-                    },
-                    onDispute = { disputeTickets = disputeTickets + it })
-                AppPage.LEDGER -> StudentLedgerScreen(s, english)
-                AppPage.ASSISTANT -> KasMateAssistantScreen(s, userName, english)
-                AppPage.SETTINGS -> SettingsPage(darkMode, onDarkModeChange, language, onLanguageChange, english) { page = AppPage.PROFILE }
-                AppPage.PROFILE -> ProfilePage(
+                    )
+                    AppPage.ASSISTANT -> KasMateAssistantScreen(s, userName, english)
+                    AppPage.SETTINGS -> SettingsPage(darkMode, onDarkModeChange, font, onFontChange, notificationsAllowed, onRequestNotifications, language, onLanguageChange, english) { page = AppPage.PROFILE }
+                    AppPage.PROFILE -> ProfilePage(
+                        english = english,
+                        userName = userName,
+                        className = className,
+                        studentNis = studentNis,
+                        imageUri = profileImageUri,
+                        onPickImage = {
+                            profilePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        onLogout = onLogout
+                    )
+                }
+            }
+            if (page != AppPage.ASSISTANT && page != AppPage.PROFILE) {
+                FloatingPaymentMascot(
+                    mood = mascotMood,
+                    phrases = mascotPhrases,
                     english = english,
-                    userName = userName,
-                    className = className,
-                    studentNis = studentNis,
-                    imageUri = profileImageUri,
-                    onPickImage = {
-                        profilePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                    onLogout = onLogout
+                    onClick = { page = AppPage.PAYMENTS },
+                    modifier = Modifier.fillMaxSize()
                 )
             }
         }
@@ -211,6 +315,19 @@ fun HomeScreen(
 }
 
 @Composable
+private fun AnimatedNavIcon(selected: Boolean, content: @Composable () -> Unit) {
+    val motionEnabled = LocalMotionEnabled.current
+    val scale by animateFloatAsState(
+        targetValue = if (selected && motionEnabled) 1.1f else 1f,
+        animationSpec = tween(if (motionEnabled) 190 else 0),
+        label = "navigation icon scale"
+    )
+    Box(Modifier.graphicsLayer { scaleX = scale; scaleY = scale }, contentAlignment = Alignment.Center) {
+        content()
+    }
+}
+
+@Composable
 private fun NavLabel(text: String, size: androidx.compose.ui.unit.TextUnit) {
     Text(
         text = text,
@@ -231,7 +348,18 @@ private fun navColors() = NavigationBarItemDefaults.colors(
 )
 
 @Composable
-private fun Dashboard(s: KasSummary, english: Boolean, userName: String, paymentSubmitted: Boolean, refreshData: () -> Unit, openSettings: () -> Unit, openPayments: () -> Unit, openAssistant: () -> Unit) {
+private fun Dashboard(
+    s: KasSummary,
+    paymentRequests: List<StudentPaymentRequest>,
+    english: Boolean,
+    userName: String,
+    paymentSubmitted: Boolean,
+    openSettings: () -> Unit,
+    openPayments: () -> Unit,
+    openLedger: () -> Unit,
+    openAssistant: () -> Unit
+) {
+    val regularBills = s.myBills.filterNot { it.isIuran }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
             Row(Modifier.fillMaxWidth().padding(top = 22.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -240,80 +368,32 @@ private fun Dashboard(s: KasSummary, english: Boolean, userName: String, payment
                     Text(greeting(userName, english), fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
                 }
                 Row {
-                    IconButton(onClick = refreshData) { Icon(Icons.Default.Refresh, if (english) "Refresh account" else "Muat ulang data") }
                     IconButton(onClick = openSettings) { Icon(Icons.Default.Tune, if (english) "Settings" else "Pengaturan") }
                 }
             }
         }
-        item { StudentStatusCard(s, english, openPayments) }
-        item {
-            val unpaid = s.myBills.firstOrNull { it.amountDue > 0 && it.status != PaymentStatus.PROSES }
-            val today = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
-            val daysLate = unpaid?.takeIf { it.dueDateMillis < today }?.let { ((today - it.dueDateMillis) / 86_400_000L).toInt().coerceAtLeast(1) } ?: 0
-            val mood = when {
-                paymentSubmitted -> MascotMood.EXCITED
-                daysLate >= 7 -> MascotMood.ANGRY
-                daysLate > 0 -> MascotMood.SAD
-                unpaid != null -> MascotMood.NEUTRAL
-                s.myBills.any { it.status == PaymentStatus.LUNAS } -> MascotMood.HAPPY
-                else -> MascotMood.NEUTRAL
-            }
-            val message = when (mood) {
-                MascotMood.ANGRY -> if (english) "I'm getting worried! ${rupiah(unpaid?.amount ?: 0)} has been overdue for $daysLate days. Let's clear it today." else "Aku mulai khawatir! ${rupiah(unpaid?.amount ?: 0)} sudah menunggak $daysLate hari. Yuk, lunasi hari ini."
-                MascotMood.SAD -> if (english) "A bill of ${rupiah(unpaid?.amount ?: 0)} is overdue. Let's settle it together." else "Yah, kas ${rupiah(unpaid?.amount ?: 0)} terlewat. Yuk, bereskan bareng-bareng!"
-                MascotMood.NEUTRAL -> if (english) "A little reminder: pay class dues before the due date." else "Ingat bayar uang kas sebelum tanggal jatuh tempo, ya!"
-                MascotMood.HAPPY -> if (english) "Wonderful, your dues are paid! ${financeFunFact(true)}" else "Yeay, kasmu lunas! ${financeFunFact(false)}"
-                MascotMood.EXCITED -> if (english) "Your payment request was sent. The bill updates after admin approval." else "Permintaan pembayaran terkirim. Tagihan diperbarui setelah disetujui admin."
-            }
-            KasMateMascotBanner(mood, message)
-        }
+        item { StudentStatusCard(s, paymentRequests, paymentSubmitted, english, openPayments) }
         item { BalanceCard(s.totalBalance, english) }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MiniStat(Modifier.weight(1f), "↗", if (english) "Income" else "Pemasukan", rupiah(s.totalIncome), Color(0xFF168A62))
-                MiniStat(Modifier.weight(1f), "↘", if (english) "Expenses" else "Pengeluaran", rupiah(s.totalExpenses), MaterialTheme.colorScheme.primary)
+                MiniStat(Modifier.weight(1f), Icons.Default.TrendingUp, if (english) "Income" else "Pemasukan", rupiah(s.totalIncome), Color(0xFF168A62))
+                MiniStat(Modifier.weight(1f), Icons.Default.TrendingDown, if (english) "Expenses" else "Pengeluaran", rupiah(s.totalExpenses), MaterialTheme.colorScheme.primary)
             }
         }
-        item { ChartCard(english) }
-        item { ClassUpdateCard(english, openAssistant) }
-        item { ClassGoalPreview(english) }
+        item { ExpenseTrendCard(s.expenses, english) }
+        item { ClassUpdateCard(s.expenses, english, openLedger) }
         item {
             OutlinedButton(onClick = openAssistant, modifier = Modifier.fillMaxWidth(), shape = BigShape) {
                 Icon(Icons.Default.AutoAwesome, null, tint = Red); Spacer(Modifier.width(8.dp)); Text(if (english) "Ask KasMate Assistant" else "Tanya Asisten KasMate", color = Red)
             }
         }
-        item { SectionTitle(if (english) "My bills" else "Tagihan saya", if (english) "See all" else "Lihat semua") }
-        items(s.myBills, key = { it.id }) { BillRow(it, english) }
-        item { SectionTitle(if (english) "Recent expenses" else "Pengeluaran terbaru", if (english) "History" else "Riwayat") }
-        items(s.expenses, key = { it.id }) { ExpenseRow(it) }
+        item { SectionTitle(if (english) "Weekly bills" else "Tagihan mingguan", if (english) "See all" else "Lihat semua", openPayments) }
+        if (regularBills.isEmpty()) item { EmptyState(if (english) "No weekly bills have been assigned yet." else "Belum ada tagihan mingguan yang diberikan.") }
+        items(regularBills, key = { "bill-${it.id}" }) { BillRow(it, english, openPayments) }
+        item { SectionTitle(if (english) "Recent expenses" else "Pengeluaran terbaru", if (english) "History" else "Riwayat", openLedger) }
+        if (s.expenses.isEmpty()) item { EmptyState(if (english) "Class expenses will appear here when recorded." else "Pengeluaran kelas akan tampil di sini setelah dicatat.") }
+        items(s.expenses.take(3), key = { it.id }) { ExpenseRow(it, openLedger) }
         item { Spacer(Modifier.height(12.dp)) }
-    }
-}
-
-@Composable
-private fun OverdueVoiceReminder(amount: Long, english: Boolean, prefs: android.content.SharedPreferences) {
-    val context = LocalContext.current
-    var ready by remember { mutableStateOf(false) }
-    val speech = remember(context) {
-        TextToSpeech(context) { status -> ready = status == TextToSpeech.SUCCESS }
-    }
-    DisposableEffect(speech) {
-        onDispose { speech.stop(); speech.shutdown() }
-    }
-    LaunchedEffect(ready, english) {
-        if (ready) speech.language = if (english) Locale.US else Locale("id", "ID")
-    }
-    LaunchedEffect(amount, english, ready) {
-        if (!ready || amount <= 0L) return@LaunchedEffect
-        val day = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-        val key = "$day:$amount:${if (english) "en" else "id"}"
-        if (prefs.getString("overdue_spoken_key", null) != key) {
-            val number = NumberFormat.getInstance(if (english) Locale.US else Locale("id", "ID")).format(amount)
-            val message = if (english) "You have an overdue class payment of $number rupiah. Let's take care of it today."
-                else "Ada tunggakan uang kas sebesar $number rupiah. Yuk, bayar hari ini."
-            speech.speak(message, TextToSpeech.QUEUE_FLUSH, null, key)
-            prefs.edit().putString("overdue_spoken_key", key).apply()
-        }
     }
 }
 
@@ -337,16 +417,45 @@ private fun greeting(userName: String, english: Boolean): String {
 }
 
 @Composable
-private fun StudentStatusCard(summary: KasSummary, english: Boolean, onClick: () -> Unit) {
-    val unpaid = summary.myBills.firstOrNull { it.amountDue > 0 && it.status != PaymentStatus.PROSES }
+private fun StudentStatusCard(
+    summary: KasSummary,
+    requests: List<StudentPaymentRequest>,
+    paymentSubmitted: Boolean,
+    english: Boolean,
+    onClick: () -> Unit
+) {
+    val pendingRequest = requests.firstOrNull { it.status == "PENDING" }
+    val pendingBillIds = requests.filter { it.status == "PENDING" }.map { it.billStudentId }.toSet()
+    val unpaid = summary.myBills.firstOrNull { bill ->
+        bill.amountDue > 0 && bill.status != PaymentStatus.PROSES &&
+            bill.id.toLongOrNull()?.let(pendingBillIds::contains) != true
+    }
+    val waitingForReview = paymentSubmitted || pendingRequest != null
+    val overdueDays = unpaid?.takeIf { it.dueDateMillis < System.currentTimeMillis() }?.let {
+        ((System.currentTimeMillis() - it.dueDateMillis) / 86_400_000L).toInt().coerceAtLeast(1)
+    } ?: 0
     StudentPanel(Modifier.clickable(onClick = onClick)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-            Box(Modifier.size(40.dp).clip(CircleShape).background(if (unpaid == null) Color(0xFF168A62).copy(alpha = .12f) else Red.copy(alpha = .1f)), contentAlignment = Alignment.Center) {
-                Icon(if (unpaid == null) Icons.Default.CheckCircle else Icons.Default.NotificationsActive, null, tint = if (unpaid == null) Color(0xFF168A62) else Red)
+            Box(Modifier.size(40.dp).clip(CircleShape).background(if (unpaid == null || waitingForReview) Color(0xFF168A62).copy(alpha = .12f) else Red.copy(alpha = .1f)), contentAlignment = Alignment.Center) {
+                Icon(if (unpaid == null && !waitingForReview) Icons.Default.CheckCircle else if (waitingForReview) Icons.Default.Schedule else Icons.Default.NotificationsActive, null, tint = if (unpaid == null || waitingForReview) Color(0xFF168A62) else Red)
             }
             Column(Modifier.weight(1f)) {
-                Text(if (unpaid == null) if (english) "Kas this month is paid" else "Kas bulan ini lunas" else if (english) "Payment due this month" else "Kas bulan ini belum lunas", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text(unpaid?.let { "${it.title} · ${rupiah(it.amountDue)}" } ?: if (english) "You're all caught up" else "Kamu tidak memiliki tunggakan", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Text(
+                    when {
+                        waitingForReview -> if (english) "Payment awaiting admin review" else "Menunggu verifikasi admin"
+                        unpaid == null -> if (english) "Class dues paid" else "Kas kelas lunas"
+                        overdueDays > 0 -> if (english) "Overdue $overdueDays days" else "Terlambat $overdueDays hari"
+                        else -> if (english) "Payment due this month" else "Kas bulan ini belum lunas"
+                    },
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Text(
+                    pendingRequest?.billName ?: unpaid?.let { "${it.title} · ${rupiah(it.amountDue)}" }
+                        ?: if (english) "You're all caught up" else "Kamu tidak memiliki tunggakan",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp
+                )
             }
             Icon(Icons.Default.ChevronRight, null, tint = Red)
         }
@@ -354,37 +463,35 @@ private fun StudentStatusCard(summary: KasSummary, english: Boolean, onClick: ()
 }
 
 @Composable
-private fun ClassUpdateCard(english: Boolean, openAssistant: () -> Unit) {
-    StudentPanel(Modifier.clickable(onClick = openAssistant)) {
+private fun ClassUpdateCard(expenses: List<Expense>, english: Boolean, openLedger: () -> Unit) {
+    val latestExpense = expenses.maxByOrNull { it.dateMillis }
+    StudentPanel(Modifier.clickable(onClick = openLedger)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Campaign, null, tint = Red)
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                Text(if (english) "Cash update" else "Kabar kas", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text(if (english) "Weekly contributions are being collected. Ask the assistant about payment details." else "Iuran mingguan sedang dikumpulkan. Tanya asisten untuk info pembayaran.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Text(if (english) "Class cash update" else "Kabar kas kelas", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(
+                    latestExpense?.let { if (english) "Latest expense: ${it.description} · ${tanggal(it.dateMillis)}" else "Pengeluaran terbaru: ${it.description} · ${tanggal(it.dateMillis)}" }
+                        ?: if (english) "No class expenses have been recorded yet." else "Belum ada pengeluaran kas kelas yang dicatat.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
             Icon(Icons.Default.ChevronRight, null, tint = Red)
         }
-    }
-}
-
-@Composable
-private fun ClassGoalPreview(english: Boolean) {
-    StudentPanel {
-        Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Column { Text(if (english) "Class meeting goal" else "Target dana classmeeting", fontWeight = FontWeight.Bold, fontSize = 14.sp); Text(if (english) "68% collected" else "68% terkumpul", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp) }
-            Text("68%", color = Red, fontWeight = FontWeight.ExtraBold)
-        }
-        LinearProgressIndicator(progress = { .68f }, modifier = Modifier.fillMaxWidth().height(7.dp).clip(CircleShape), color = Red, trackColor = Red.copy(alpha = .12f))
     }
 }
 
 @Composable
 private fun BalanceCard(total: Long, english: Boolean) {
     var shown by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (shown) 1f else .92f, label = "balance scale")
+    val motionEnabled = LocalMotionEnabled.current
+    val scale by animateFloatAsState(if (!motionEnabled || shown) 1f else .94f, animationSpec = tween(if (motionEnabled) 260 else 0), label = "balance scale")
     LaunchedEffect(Unit) { shown = true }
-    Column(Modifier.fillMaxWidth().padding(top = 4.dp).clip(BigShape).animateContentSize()
+    Column(Modifier.fillMaxWidth().padding(top = 4.dp).clip(BigShape).animateContentSize(animationSpec = tween(if (motionEnabled) 220 else 0))
         .background(Brush.linearGradient(listOf(DeepRed, Red, SoftRed)))
         .padding(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -393,66 +500,159 @@ private fun BalanceCard(total: Long, english: Boolean) {
         }
         Text(rupiah(total), color = Color.White, fontSize = (32 * scale).sp, fontWeight = FontWeight.ExtraBold)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.TrendingUp, null, tint = Color.White, modifier = Modifier.size(18.dp))
-            Text(if (english) "  +8.2% from last month" else "  +8,2% dari bulan lalu", color = Color.White, fontSize = 13.sp)
+            Icon(Icons.Default.Sync, null, tint = Color.White, modifier = Modifier.size(17.dp))
+            Text(if (english) "  Latest class account balance" else "  Saldo terkini dari kas kelas", color = Color.White, fontSize = 12.sp)
         }
     }
 }
 
 @Composable
-private fun MiniStat(modifier: Modifier, icon: String, label: String, value: String, tint: Color) {
-    Column(modifier.shadow(2.dp, BigShape).clip(BigShape).background(MaterialTheme.colorScheme.surface)
+private fun MiniStat(modifier: Modifier, icon: ImageVector, label: String, value: String, tint: Color) {
+    Column(modifier.clip(BigShape).background(MaterialTheme.colorScheme.surface)
         .border(1.dp, MaterialTheme.colorScheme.outline, BigShape).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) { Text(icon, color = tint, fontSize = 18.sp, fontWeight = FontWeight.Bold); Text("  $label", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
+        Row(verticalAlignment = Alignment.CenterVertically) { Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp)); Text("  $label", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
         Text(value, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
     }
 }
 
+private data class ExpenseChartBucket(val label: String, val amount: Long)
+
+private fun expenseChartBuckets(expenses: List<Expense>, weekly: Boolean, english: Boolean): List<ExpenseChartBucket> {
+    val locale = if (english) Locale.US else Locale.forLanguageTag("id-ID")
+    val now = Calendar.getInstance()
+    val starts = (5 downTo 0).map { back ->
+        (now.clone() as Calendar).apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            if (weekly) {
+                val offset = (get(Calendar.DAY_OF_WEEK) + 5) % 7
+                add(Calendar.DAY_OF_MONTH, -offset)
+                add(Calendar.WEEK_OF_YEAR, -back)
+            } else {
+                set(Calendar.DAY_OF_MONTH, 1)
+                add(Calendar.MONTH, -back)
+            }
+        }
+    }
+    val format = SimpleDateFormat(if (weekly) "d MMM" else "MMM", locale)
+    return starts.mapIndexed { index, start ->
+        val end = (start.clone() as Calendar).apply { add(if (weekly) Calendar.WEEK_OF_YEAR else Calendar.MONTH, 1) }
+        val total = expenses.asSequence()
+            .filter { it.dateMillis >= start.timeInMillis && it.dateMillis < end.timeInMillis }
+            .sumOf { it.amount }
+        ExpenseChartBucket(format.format(start.time).replaceFirstChar { if (it.isLowerCase()) it.titlecase(locale) else it.toString() }, total)
+    }
+}
+
 @Composable
-private fun ChartCard(english: Boolean) {
+private fun ExpenseTrendCard(expenses: List<Expense>, english: Boolean) {
     var weekly by remember { mutableStateOf(false) }
-    val periodTint by animateColorAsState(if (weekly) Red else Red.copy(alpha = .1f), label = "chart period")
-    Column(Modifier.fillMaxWidth().shadow(2.dp, BigShape).clip(BigShape).background(MaterialTheme.colorScheme.surface)
+    val motionEnabled = LocalMotionEnabled.current
+    val buckets = remember(expenses, weekly, english) { expenseChartBuckets(expenses, weekly, english) }
+    var chartTarget by remember(weekly, expenses) { mutableStateOf(0f) }
+    val reveal by animateFloatAsState(
+        targetValue = chartTarget,
+        animationSpec = tween(if (motionEnabled) 420 else 0),
+        label = "expense chart reveal"
+    )
+    LaunchedEffect(buckets, motionEnabled) {
+        chartTarget = 0f
+        if (motionEnabled) delay(30)
+        chartTarget = 1f
+    }
+    val periodTint by animateColorAsState(
+        if (weekly) Red else Red.copy(alpha = .1f),
+        animationSpec = tween(if (motionEnabled) 160 else 0),
+        label = "chart period"
+    )
+    val hasExpenses = expenses.isNotEmpty()
+    val maximum = buckets.maxOfOrNull { it.amount }?.coerceAtLeast(1L) ?: 1L
+    val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = .55f)
+    Column(Modifier.fillMaxWidth().clip(BigShape).background(MaterialTheme.colorScheme.surface)
         .border(1.dp, MaterialTheme.colorScheme.outline, BigShape).padding(18.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Column { Text(if (english) "Cash flow" else "Arus kas", fontSize = 18.sp, fontWeight = FontWeight.Bold); Text(if (english) "Income vs expenses" else "Pemasukan vs pengeluaran", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            Text(if (weekly) "MINGGU" else "BULAN", color = if (weekly) Color.White else Red, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.clip(CircleShape).clickable { weekly = !weekly }.background(periodTint).padding(horizontal = 12.dp, vertical = 8.dp))
-        }
-        Spacer(Modifier.height(16.dp))
-        Canvas(Modifier.fillMaxWidth().height(118.dp)) {
-            val values = if (weekly) listOf(.4f, .58f, .42f, .8f, .61f, .92f) else listOf(.35f, .5f, .43f, .72f, .58f, .87f)
-            val step = size.width / (values.size - 1)
-            for (i in 0..3) drawLine(Color.Gray.copy(alpha = .18f), androidx.compose.ui.geometry.Offset(0f, size.height * i / 3), androidx.compose.ui.geometry.Offset(size.width, size.height * i / 3), 1.dp.toPx())
-            val line = Path().apply { values.forEachIndexed { i, v -> val p = androidx.compose.ui.geometry.Offset(i * step, size.height * (1 - v)); if (i == 0) moveTo(p.x, p.y) else quadraticTo((i - .5f) * step, size.height * (1 - values[i - 1]), p.x, p.y) } }
-            val area = Path().apply {
-                moveTo(0f, size.height)
-                values.forEachIndexed { i, v ->
-                    val p = androidx.compose.ui.geometry.Offset(i * step, size.height * (1 - v))
-                    if (i == 0) lineTo(p.x, p.y) else quadraticTo((i - .5f) * step, size.height * (1 - values[i - 1]), p.x, p.y)
-                }
-                lineTo(size.width, size.height)
-                close()
+            Column(Modifier.weight(1f)) {
+                Text(if (english) "Class expenses" else "Pengeluaran kas", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(if (english) "Recorded transactions" else "Transaksi yang sudah dicatat", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            drawPath(area, Brush.verticalGradient(listOf(Red.copy(alpha = .22f), SoftRed.copy(alpha = .02f))))
-            drawPath(line, Red, style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
-            values.forEachIndexed { i, v -> drawCircle(Red, 4.dp.toPx(), androidx.compose.ui.geometry.Offset(i * step, size.height * (1 - v))) }
+            Text(
+                text = if (weekly) if (english) "WEEK" else "MINGGU" else if (english) "MONTH" else "BULAN",
+                color = if (weekly) Color.White else Red,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clip(CircleShape).clickable { weekly = !weekly }.background(periodTint).padding(horizontal = 12.dp, vertical = 8.dp)
+            )
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { (if (weekly) listOf("Sen", "Sel", "Rab", "Kam", "Jum", "Sab") else listOf("Jun", "Jul", "Agu", "Sep", "Okt", "Nov")).forEach { Text(it, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+        Spacer(Modifier.height(14.dp))
+        if (hasExpenses) {
+            Canvas(Modifier.fillMaxWidth().height(118.dp)) {
+                val step = size.width / (buckets.size - 1)
+                for (i in 0..3) {
+                    drawLine(
+                        gridColor,
+                        androidx.compose.ui.geometry.Offset(0f, size.height * i / 3),
+                        androidx.compose.ui.geometry.Offset(size.width, size.height * i / 3),
+                        1.dp.toPx()
+                    )
+                }
+                val points = buckets.mapIndexed { index, bucket ->
+                    val amountScale = (bucket.amount.toFloat() / maximum.toFloat()).coerceIn(0f, 1f)
+                    androidx.compose.ui.geometry.Offset(
+                        index * step,
+                        size.height * (1f - (.15f + amountScale * .72f * reveal))
+                    )
+                }
+                val line = Path().apply {
+                    points.forEachIndexed { index, point ->
+                        if (index == 0) moveTo(point.x, point.y)
+                        else quadraticTo((points[index - 1].x + point.x) / 2f, points[index - 1].y, point.x, point.y)
+                    }
+                }
+                val area = Path().apply {
+                    moveTo(points.first().x, size.height)
+                    lineTo(points.first().x, points.first().y)
+                    points.drop(1).forEachIndexed { index, point ->
+                        val previous = points[index]
+                        quadraticTo((previous.x + point.x) / 2f, previous.y, point.x, point.y)
+                    }
+                    lineTo(points.last().x, size.height)
+                    close()
+                }
+                drawPath(area, Brush.verticalGradient(listOf(Red.copy(alpha = .18f), SoftRed.copy(alpha = .015f))))
+                drawPath(line, Red, style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
+                points.forEach { drawCircle(Red, 4.dp.toPx(), it) }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                buckets.forEach { Text(it.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+        } else {
+            Text(
+                if (english) "Expense history will appear after the class records its first transaction." else "Riwayat pengeluaran tampil setelah transaksi pertama dicatat.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)
+            )
+        }
     }
 }
 
 @Composable
-private fun SectionTitle(title: String, action: String) {
+private fun SectionTitle(title: String, action: String, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text(title, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-        Text(action, color = Red, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Box(Modifier.defaultMinSize(minHeight = 48.dp).clip(CircleShape).clickable(onClick = onClick).padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
+            Text(action, color = Red, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
     }
 }
 
 @Composable
-private fun BillRow(b: Bill, english: Boolean) {
+private fun BillRow(b: Bill, english: Boolean, onClick: () -> Unit) {
     val paid = b.status == PaymentStatus.LUNAS
-    Row(Modifier.fillMaxWidth().shadow(1.dp, BigShape).clip(BigShape).background(MaterialTheme.colorScheme.surface)
+    Row(Modifier.fillMaxWidth().clip(BigShape).clickable(onClick = onClick).background(MaterialTheme.colorScheme.surface)
         .border(1.dp, MaterialTheme.colorScheme.outline, BigShape).padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(Modifier.size(42.dp).clip(CircleShape).background(Red.copy(alpha = .12f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Receipt, null, tint = Red) }
@@ -463,8 +663,8 @@ private fun BillRow(b: Bill, english: Boolean) {
 }
 
 @Composable
-private fun ExpenseRow(e: Expense) {
-    Row(Modifier.fillMaxWidth().shadow(1.dp, BigShape).clip(BigShape).background(MaterialTheme.colorScheme.surface)
+private fun ExpenseRow(e: Expense, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(BigShape).clickable(onClick = onClick).background(MaterialTheme.colorScheme.surface)
         .border(1.dp, MaterialTheme.colorScheme.outline, BigShape).padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) { Text(e.description, fontWeight = FontWeight.Bold, fontSize = 15.sp); Text("${tanggal(e.dateMillis)} · ${e.noteBy}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         Text("− ${rupiah(e.amount)}", color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
@@ -472,11 +672,10 @@ private fun ExpenseRow(e: Expense) {
 }
 
 @Composable
-private fun SettingsPage(dark: Boolean, onDark: (Boolean) -> Unit, language: AppLanguage, onLanguage: (AppLanguage) -> Unit, english: Boolean, onOpenProfile: () -> Unit) {
+private fun SettingsPage(dark: Boolean, onDark: (Boolean) -> Unit, font: AppFont, onFontChange: (AppFont) -> Unit, notificationsAllowed: Boolean, onRequestNotifications: () -> Unit, language: AppLanguage, onLanguage: (AppLanguage) -> Unit, english: Boolean, onOpenProfile: () -> Unit) {
     var languageMenu by remember { mutableStateOf(false) }
-    var supportOpen by remember { mutableStateOf(false) }
-    var feedback by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(top = 26.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+    var fontMenu by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 26.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(if (english) "Settings" else "Pengaturan", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
         Text(if (english) "Personalize your KasMate experience" else "Atur pengalaman KasMate sesuai gayamu", color = MaterialTheme.colorScheme.onSurfaceVariant)
         SettingCard(if (english) "APPEARANCE" else "TAMPILAN") {
@@ -487,33 +686,62 @@ private fun SettingsPage(dark: Boolean, onDark: (Boolean) -> Unit, language: App
         }
         SettingCard(if (english) "LANGUAGE" else "BAHASA") {
             Box {
-                Row(Modifier.fillMaxWidth().clickable { languageMenu = true }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clickable { languageMenu = true }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { Icon(Icons.Default.Language, null, tint = Red); Column { Text(if (english) "App language" else "Bahasa aplikasi", fontWeight = FontWeight.Bold); Text(if (language == AppLanguage.ENGLISH) "English" else "Bahasa Indonesia", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }; Icon(Icons.Default.ExpandMore, null)
                 }
                 DropdownMenu(languageMenu, { languageMenu = false }) { AppLanguage.entries.forEach { l -> DropdownMenuItem(text = { Text(if (l == AppLanguage.ENGLISH) "English" else "Bahasa Indonesia") }, onClick = { onLanguage(l); languageMenu = false }) } }
             }
         }
-        SettingCard(if (english) "ACCOUNT" else "AKUN") { Row(Modifier.fillMaxWidth().clickable(onClick = onOpenProfile), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { Icon(Icons.Default.Person, null, tint = Red); Column(Modifier.weight(1f)) { Text(if (english) "Profile" else "Profil", fontWeight = FontWeight.Bold); Text(if (english) "Manage your personal information" else "Kelola informasi pribadimu", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Icon(Icons.Default.ChevronRight, null) } }
-        SettingCard(if (english) "HELP & SUPPORT" else "BANTUAN & DUKUNGAN") {
-            Row(Modifier.fillMaxWidth().clickable { supportOpen = true }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Default.Forum, null, tint = Red)
-                Column(Modifier.weight(1f)) { Text(if (english) "Suggestions and support" else "Kotak saran & dukungan", fontWeight = FontWeight.Bold); Text(if (english) "Tell us what can be improved" else "Kirim masukan atau laporkan kendala", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                Icon(Icons.Default.ChevronRight, null)
+        SettingCard(if (english) "FONT" else "HURUF") {
+            Box {
+                Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clickable { fontMenu = true }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Icon(Icons.Default.TextFields, null, tint = Red)
+                        Column {
+                            Text(if (english) "Font style" else "Gaya font", fontWeight = FontWeight.Bold)
+                            Text(font.label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Icon(Icons.Default.ExpandMore, null)
+                }
+                DropdownMenu(fontMenu, { fontMenu = false }) {
+                    AppFont.entries.forEach { choice ->
+                        DropdownMenuItem(
+                            text = { Text(choice.label) },
+                            trailingIcon = if (choice == font) ({ Icon(Icons.Default.Check, null, tint = Red) }) else null,
+                            onClick = { onFontChange(choice); fontMenu = false }
+                        )
+                    }
+                }
             }
         }
+        SettingCard(if (english) "PHONE NOTIFICATIONS" else "NOTIFIKASI HP") {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(40.dp).clip(CircleShape).background(if (notificationsAllowed) Color(0xFF168A62).copy(alpha = .12f) else Red.copy(alpha = .1f)), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.NotificationsActive, null, tint = if (notificationsAllowed) Color(0xFF168A62) else Red)
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(if (english) "Bill and reminder alerts" else "Notifikasi tagihan dan pengingat", fontWeight = FontWeight.Bold)
+                    Text(
+                        if (notificationsAllowed) if (english) "Android notifications are allowed" else "Izin notifikasi Android aktif" else if (english) "Allow alerts while KasMate is closed" else "Izinkan pemberitahuan saat KasMate ditutup",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            OutlinedButton(onClick = onRequestNotifications, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                Icon(if (notificationsAllowed) Icons.Default.Settings else Icons.Default.Notifications, null, tint = Red)
+                Spacer(Modifier.width(8.dp))
+                Text(if (notificationsAllowed) if (english) "Manage notification permission" else "Kelola izin notifikasi" else if (english) "Enable notifications" else "Aktifkan notifikasi", color = Red)
+            }
+        }
+        SettingCard(if (english) "ACCOUNT" else "AKUN") { Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clickable(onClick = onOpenProfile), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { Icon(Icons.Default.Person, null, tint = Red); Column(Modifier.weight(1f)) { Text(if (english) "Profile" else "Profil", fontWeight = FontWeight.Bold); Text(if (english) "Manage your personal information" else "Kelola informasi pribadimu", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Icon(Icons.Default.ChevronRight, null) } }
     }
-    if (supportOpen) AlertDialog(
-        onDismissRequest = { supportOpen = false },
-        title = { Text(if (english) "Suggestions & support" else "Saran & dukungan") },
-        text = { OutlinedTextField(value = feedback, onValueChange = { feedback = it }, modifier = Modifier.fillMaxWidth(), minLines = 3, placeholder = { Text(if (english) "Write your suggestion or issue" else "Tulis saran atau kendala yang kamu alami") }) },
-        confirmButton = { TextButton(onClick = { supportOpen = false; feedback = "" }) { Text(if (english) "Done" else "Selesai", color = Red) } },
-        dismissButton = { TextButton(onClick = { supportOpen = false }) { Text(if (english) "Cancel" else "Batal") } }
-    )
 }
 
 @Composable
 private fun SettingCard(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().shadow(1.dp, BigShape).clip(BigShape).background(MaterialTheme.colorScheme.surface)
+    Column(Modifier.fillMaxWidth().clip(BigShape).background(MaterialTheme.colorScheme.surface)
         .border(1.dp, MaterialTheme.colorScheme.outline, BigShape).padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text(title, color = Red, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.3.sp)
         content()

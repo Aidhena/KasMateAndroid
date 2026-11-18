@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -32,8 +33,6 @@ import androidx.compose.ui.unit.sp
 import com.smktel.kasmate.data.*
 import java.util.Locale
 import java.util.concurrent.TimeUnit
-
-data class DemoDispute(val id: String, val message: String, val status: String = "Demo lokal")
 
 private fun paymentMethodLabel(method: String): String = when (method.uppercase()) {
     "QRIS" -> "QRIS"
@@ -97,9 +96,9 @@ fun StudentPaymentScreen(
     summary: KasSummary,
     english: Boolean,
     requests: List<StudentPaymentRequest>,
-    disputes: List<DemoDispute>,
-    onSubmitPayment: (Long, String, Uri?, (String?) -> Unit) -> Unit,
-    onDispute: (DemoDispute) -> Unit
+    initialBillId: String? = null,
+    onInitialBillHandled: () -> Unit = {},
+    onSubmitPayment: (Long, String, Uri?, (String?) -> Unit) -> Unit
 ) {
     val unpaid = summary.myBills.filter { it.amountDue > 0 && it.status != PaymentStatus.PROSES }
     val pendingBillIds = requests.filter { it.status == "PENDING" }.map { it.billStudentId }.toSet()
@@ -107,14 +106,12 @@ fun StudentPaymentScreen(
         .minByOrNull { it.dueDateMillis }
     val newestPendingRequest = requests.firstOrNull { it.status == "PENDING" }
     var showPayment by remember { mutableStateOf(false) }
-    var showDispute by remember { mutableStateOf(false) }
     var chosenBill by remember { mutableStateOf(nextBill) }
     var selectedReceiptId by remember { mutableStateOf<String?>(null) }
     var method by remember { mutableStateOf("QRIS") }
     var proof by remember { mutableStateOf<Uri?>(null) }
     var isSubmitting by remember { mutableStateOf(false) }
     var submitError by remember { mutableStateOf<String?>(null) }
-    var disputeMessage by remember { mutableStateOf("") }
     var notice by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val proofFile = remember(proof, context) { proof?.let { paymentProofFileInfo(context, it) } }
@@ -126,6 +123,19 @@ fun StudentPaymentScreen(
         receiptBills.firstOrNull { it.id == receiptId }
     }
     val daysLeft = nextBill?.let { TimeUnit.MILLISECONDS.toDays((it.dueDateMillis - System.currentTimeMillis()).coerceAtLeast(0)) }
+    LaunchedEffect(initialBillId, summary.myBills, requests) {
+        val billId = initialBillId ?: return@LaunchedEffect
+        val bill = unpaid.firstOrNull { it.id == billId }
+        val hasPendingRequest = billId.toLongOrNull()?.let(pendingBillIds::contains) == true
+        if (bill != null && !hasPendingRequest) {
+            chosenBill = bill
+            method = "QRIS"
+            proof = null
+            submitError = null
+            showPayment = true
+        }
+        onInitialBillHandled()
+    }
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
@@ -151,13 +161,8 @@ fun StudentPaymentScreen(
             }
         }
         item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = { chosenBill = nextBill; method = "QRIS"; proof = null; submitError = null; showPayment = true }, enabled = nextBill != null, modifier = Modifier.weight(1f), shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = Red)) {
-                    Icon(Icons.Default.Payments, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(7.dp)); Text(if (english) "Pay bill" else "Bayar kas")
-                }
-                OutlinedButton(onClick = { showDispute = true }, modifier = Modifier.weight(1f), shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp)) {
-                    Icon(Icons.Default.SupportAgent, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(7.dp)); Text(if (english) "Dispute" else "Sanggah")
-                }
+            Button(onClick = { chosenBill = nextBill; method = "QRIS"; proof = null; submitError = null; showPayment = true }, enabled = nextBill != null, modifier = Modifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = Red)) {
+                Icon(Icons.Default.Payments, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(7.dp)); Text(if (english) "Pay bill" else "Bayar kas")
             }
         }
         notice?.let { item { Text(it, color = Color(0xFF168A62), fontSize = 13.sp, modifier = Modifier.fillMaxWidth().background(Color(0xFF168A62).copy(alpha = .1f), BigShape).padding(14.dp)) } }
@@ -232,7 +237,6 @@ fun StudentPaymentScreen(
             }
         }
         if (requests.isEmpty()) item { EmptyState(if (english) "Payment requests will appear here" else "Permintaan pembayaranmu akan muncul di sini") }
-        disputes.forEach { ticket -> item(key = ticket.id) { StudentPanel { Text("Tiket ${ticket.id}", color = Red, fontWeight = FontWeight.Bold); Text(ticket.message); Text(ticket.status, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) } } }
         item { Spacer(Modifier.height(16.dp)) }
     }
 
@@ -309,15 +313,6 @@ fun StudentPaymentScreen(
             dismissButton = { TextButton(onClick = { showPayment = false }, enabled = !isSubmitting) { Text(if (english) "Cancel" else "Batal") } }
         )
     }
-    if (showDispute) {
-        AlertDialog(
-            onDismissRequest = { showDispute = false },
-            title = { Text(if (english) "Report a payment issue" else "Ajukan sanggahan") },
-            text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { Text(if (english) "Describe what needs to be checked. You can attach proof in the payment flow." else "Ceritakan catatan pembayaran yang perlu diperiksa.", fontSize = 13.sp); OutlinedTextField(disputeMessage, { disputeMessage = it }, label = { Text(if (english) "Message" else "Pesan") }, minLines = 3) } },
-            confirmButton = { Button(onClick = { if (disputeMessage.isNotBlank()) { onDispute(DemoDispute("TKT-${System.currentTimeMillis().toString().takeLast(5)}", disputeMessage)); disputeMessage = ""; notice = if (english) "Demo ticket saved on this device only." else "Tiket demo hanya tersimpan di perangkat ini."; showDispute = false } }, colors = ButtonDefaults.buttonColors(containerColor = Red)) { Text(if (english) "Save demo ticket" else "Simpan tiket demo") } },
-            dismissButton = { TextButton(onClick = { showDispute = false }) { Text(if (english) "Cancel" else "Batal") } }
-        )
-    }
     selectedReceipt?.let { bill ->
         AlertDialog(
             onDismissRequest = { selectedReceiptId = null },
@@ -330,17 +325,25 @@ fun StudentPaymentScreen(
 }
 
 @Composable
-fun StudentLedgerScreen(summary: KasSummary, english: Boolean) {
+fun StudentLedgerScreen(
+    summary: KasSummary,
+    english: Boolean,
+    requests: List<StudentPaymentRequest> = emptyList(),
+    onPayIuran: (String) -> Unit = {}
+) {
     var query by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("Semua") }
-    var ageFilter by remember { mutableStateOf("Semua") }
+    var ageFilter by remember { mutableStateOf("all") }
     var selectedExpense by remember { mutableStateOf<Expense?>(null) }
-    val categories = listOf("Semua", "Perlengkapan", "Akademik")
-    val ages = listOf("Semua", "7 hari", "30 hari")
-    val filtered = summary.expenses.filter { expense ->
-        val cat = if (expense.description.contains("foto", true)) "Akademik" else "Perlengkapan"
+    val iuranBills = summary.myBills.filter { it.isIuran && !it.isArchived }
+    val pendingBillIds = requests.filter { it.status == "PENDING" }.map { it.billStudentId }.toSet()
+    val ages = if (english) listOf("all" to "All time", "7d" to "7 days", "30d" to "30 days") else listOf("all" to "Semua", "7d" to "7 hari", "30d" to "30 hari")
+    val filtered = summary.expenses.sortedByDescending { it.dateMillis }.filter { expense ->
         val ageDays = TimeUnit.MILLISECONDS.toDays((System.currentTimeMillis() - expense.dateMillis).coerceAtLeast(0))
-        expense.description.contains(query, true) && (category == "Semua" || cat == category) && when (ageFilter) { "7 hari" -> ageDays <= 7; "30 hari" -> ageDays <= 30; else -> true }
+        expense.description.contains(query.trim(), true) && when (ageFilter) {
+            "7d" -> ageDays <= 7
+            "30d" -> ageDays <= 30
+            else -> true
+        }
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
         item { PageHeading(if (english) "Class transparency" else "Transparansi kas", if (english) "See how class funds are used" else "Lihat aliran dana kelas secara terbuka") }
@@ -348,14 +351,39 @@ fun StudentLedgerScreen(summary: KasSummary, english: Boolean) {
             Column(Modifier.fillMaxWidth().clip(BigShape).background(Brush.linearGradient(listOf(DeepRed, Red, SoftRed))).padding(20.dp)) {
                 Text(if (english) "LIVE CLASS BALANCE" else "SALDO KAS KELAS", color = Color.White.copy(alpha = .85f), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 Text(rupiah(summary.totalBalance), color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.ExtraBold)
-                Text(if (english) "Updated from the class account" else "Diperbarui dari data kas kelas", color = Color.White.copy(alpha = .8f), fontSize = 12.sp)
+                Text(if (english) "Current balance from the class account" else "Saldo terkini dari kas kelas", color = Color.White.copy(alpha = .9f), fontSize = 12.sp)
+            }
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                StudentPanel(Modifier.weight(1f)) {
+                    Text(if (english) "Income" else "Pemasukan", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    Text(rupiah(summary.totalIncome), color = Color(0xFF168A62), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+                StudentPanel(Modifier.weight(1f)) {
+                    Text(if (english) "Expenses" else "Pengeluaran", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    Text(rupiah(summary.totalExpenses), color = Red, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+            }
+        }
+        item { IuranTotalCard(summary.totalIuranCollected, summary.totalIuranTarget, english) }
+        item { PageSectionTitle(if (english) "My class contributions" else "Iuran saya") }
+        if (iuranBills.isEmpty()) {
+            item { EmptyState(if (english) "No special class contributions have been assigned." else "Belum ada tagihan iuran khusus untukmu.") }
+        } else {
+            items(iuranBills, key = { "iuran-${it.id}" }) { bill ->
+                IuranProgressCard(
+                    bill = bill,
+                    english = english,
+                    waitingForReview = bill.id.toLongOrNull()?.let(pendingBillIds::contains) == true,
+                    onPay = { onPayIuran(bill.id) }
+                )
             }
         }
         item { PageSectionTitle(if (english) "Find a class expense" else "Cari pengeluaran kelas") }
-        item { OutlinedTextField(query, { query = it }, modifier = Modifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp), label = { Text(if (english) "Search description" else "Cari keterangan") }, leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true) }
-        item { FilterStrip(categories, category) { category = it } }
+        item { OutlinedTextField(query, { query = it }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), label = { Text(if (english) "Search description" else "Cari keterangan") }, leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true) }
         item { FilterStrip(ages, ageFilter) { ageFilter = it } }
-        item { PageSectionTitle(if (english) "Income and expenses" else "Rincian transaksi kelas") }
+        item { PageSectionTitle(if (english) "Class expenses" else "Rincian transaksi kelas") }
         if (filtered.isEmpty()) item { EmptyState(if (english) "No transactions match those filters" else "Tidak ada transaksi yang cocok") }
         items(filtered, key = { it.id }) { expense ->
             StudentPanel(Modifier.clickable { selectedExpense = expense }) {
@@ -368,7 +396,6 @@ fun StudentLedgerScreen(summary: KasSummary, english: Boolean) {
                 Text(if (english) "Tap to view expense details and receipt status" else "Ketuk untuk melihat detail dan status nota", color = Red, fontSize = 10.sp, modifier = Modifier.padding(start = 54.dp, top = 6.dp))
             }
         }
-        item { PaymentProgressCard(summary, english) }
         item { Spacer(Modifier.height(14.dp)) }
     }
     selectedExpense?.let { expense ->
@@ -377,56 +404,105 @@ fun StudentLedgerScreen(summary: KasSummary, english: Boolean) {
 }
 
 @Composable
-private fun PaymentProgressCard(summary: KasSummary, english: Boolean) {
-    val totalAmount = summary.myBills.sumOf { it.amountPaid + it.amountDue }
-    val paidAmount = summary.myBills.sumOf { it.amountPaid }
-    val progress = if (totalAmount > 0) {
-        (paidAmount.toFloat() / totalAmount.toFloat()).coerceIn(0f, 1f)
-    } else {
-        0f
+private fun IuranTotalCard(collected: Long, target: Long, english: Boolean) {
+    val progress = if (target > 0) (collected.toFloat() / target.toFloat()).coerceIn(0f, 1f) else 0f
+    val progressColor = if (target > 0 && collected >= target) Color(0xFF168A62) else Red
+    StudentPanel {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.size(44.dp).clip(CircleShape).background(Red.copy(alpha = .12f)), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Savings, null, tint = Red)
+            }
+            Column(Modifier.weight(1f)) {
+                Text(if (english) "Total class contributions" else "Total iuran kelas", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(rupiah(collected), fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Red)
+            }
+        }
+        if (target > 0) {
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(8.dp)),
+                color = progressColor,
+                trackColor = MaterialTheme.colorScheme.outline.copy(alpha = .22f)
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("${if (english) "Collected" else "Terkumpul"}: ${rupiah(collected)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${(progress * 100).toInt()}% · ${rupiah(target)}", fontSize = 10.sp, color = progressColor, fontWeight = FontWeight.Bold)
+            }
+        } else {
+            Text(
+                if (english) "Total approved payments from special class contributions" else "Akumulasi pembayaran iuran khusus kelas yang sudah disetujui",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
-    val paidCount = summary.myBills.count { it.status == PaymentStatus.LUNAS }
-    val contributedCount = summary.myBills.count { it.amountPaid > 0 }
+}
+
+@Composable
+private fun IuranProgressCard(
+    bill: Bill,
+    english: Boolean,
+    waitingForReview: Boolean,
+    onPay: () -> Unit
+) {
+    val goal = bill.assessedAmount.takeIf { it > 0 } ?: bill.amount.coerceAtLeast(0)
+    val paid = bill.amountPaid.coerceIn(0, goal)
+    val progress = if (goal > 0) paid.toFloat() / goal.toFloat() else 0f
+    val isPaid = bill.status == PaymentStatus.LUNAS || bill.amountDue <= 0
+    val isPending = waitingForReview || bill.status == PaymentStatus.PROSES
+    val progressColor = if (isPaid) Color(0xFF168A62) else Red
+    val statusText = when {
+        isPaid -> if (english) "PAID" else "LUNAS"
+        isPending -> if (english) "IN REVIEW" else "MENUNGGU"
+        else -> if (english) "CONTRIBUTION" else "IURAN"
+    }
+    val statusColor = if (isPaid) Color(0xFF168A62) else if (isPending) Color(0xFFE19A1A) else Red
 
     StudentPanel {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Flag, contentDescription = null, tint = Red)
-            Spacer(Modifier.width(9.dp))
-            Text(
-                if (english) "Your payment progress" else "Progres pembayaranmu",
-                fontWeight = FontWeight.Bold
-            )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(Modifier.size(40.dp).clip(CircleShape).background(statusColor.copy(alpha = .12f)), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Receipt, contentDescription = null, tint = statusColor)
+            }
+            Column(Modifier.weight(1f)) {
+                Text(bill.title, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (english) "Special class contribution" else "Iuran kegiatan kelas", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Surface(color = statusColor.copy(alpha = .1f), shape = CircleShape) {
+                Text(statusText, color = statusColor, fontWeight = FontWeight.Bold, fontSize = 9.sp, modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp))
+            }
         }
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(
-                if (english) "Amount paid" else "Jumlah dibayar",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp
-            )
-            Text(
-                if (totalAmount > 0) "${rupiah(paidAmount)} / ${rupiah(totalAmount)}" else "—",
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold
-            )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(if (english) "Progress to goal" else "Progres menuju target", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${(progress * 100).toInt()}%", fontSize = 11.sp, color = progressColor, fontWeight = FontWeight.ExtraBold)
         }
-        Spacer(Modifier.height(8.dp))
         LinearProgressIndicator(
             progress = { progress },
-            modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
-            color = Red,
-            trackColor = Red.copy(alpha = .12f)
+            modifier = Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(8.dp)),
+            color = progressColor,
+            trackColor = MaterialTheme.colorScheme.outline.copy(alpha = .22f)
         )
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Column {
-                Text(if (english) "Bills paid" else "Tagihan lunas", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
-                Text("$paidCount / ${summary.myBills.size}", color = Red, fontWeight = FontWeight.Bold)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("${rupiah(paid)} / ${rupiah(goal)}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text(
+                    when {
+                        isPaid -> if (english) "Goal reached" else "Target tercapai"
+                        isPending -> if (english) "Awaiting admin review" else "Menunggu verifikasi admin"
+                        else -> "${if (english) "Remaining" else "Sisa"} ${rupiah(bill.amountDue)}"
+                    },
+                    fontSize = 10.sp,
+                    color = if (isPending) Color(0xFFE19A1A) else MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            Column(horizontalAlignment = Alignment.End) {
-                Text(if (english) "Bills contributed to" else "Tagihan pernah dibayar", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
-                Text("$contributedCount", color = Red, fontWeight = FontWeight.Bold)
+            if (!isPaid && !isPending) {
+                Button(
+                    onClick = onPay,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Red),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text(if (english) "Pay" else "Bayar", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
             }
         }
     }
@@ -500,7 +576,7 @@ private fun localAssistantAnswer(question: String, summary: KasSummary, english:
             if (recent == null) if (english) "There are no expense records yet." else "Belum ada catatan pengeluaran."
             else if (english) "The latest expense is ${recent.description}, ${rupiah(recent.amount)}, recorded ${tanggal(recent.dateMillis)}. Open Class to see its details." else "Pengeluaran terbaru: ${recent.description}, ${rupiah(recent.amount)}, dicatat ${tanggal(recent.dateMillis)}. Buka Kas Kelas untuk detailnya."
         }
-        listOf("sanggah", "dispute", "salah", "wrong").any(q::contains) -> if (english) "The dispute form is a local demo and does not send a ticket to staff yet. Contact your class treasurer directly." else "Formulir sanggahan masih demo lokal dan belum mengirim tiket ke admin. Hubungi bendahara kelas secara langsung."
+        listOf("sanggah", "dispute", "salah", "wrong").any(q::contains) -> if (english) "Payment issues are checked by your class administrator. Contact them directly with the bill and payment details." else "Masalah pembayaran diperiksa oleh admin kelas. Hubungi admin secara langsung dengan detail tagihan dan pembayaran."
         else -> if (english) "I can help with your bill, class balance, or expenses. Ask a specific question about your class account." else "Aku bisa bantu soal tagihan, saldo kelas, atau pengeluaran. Tanyakan hal spesifik tentang akun kas kelasmu."
     }
 }
@@ -519,15 +595,20 @@ fun financeFunFact(english: Boolean): String {
 }
 
 @Composable
-private fun FilterStrip(options: List<String>, selected: String, onSelect: (String) -> Unit) {
+private fun FilterStrip(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        options.forEach { option -> FilterChip(selected = selected == option, onClick = { onSelect(option) }, label = { Text(option, fontSize = 11.sp) }) }
+        options.forEach { (value, label) -> FilterChip(selected = selected == value, onClick = { onSelect(value) }, label = { Text(label, fontSize = 11.sp) }) }
     }
 }
 
 @Composable
 fun StudentPanel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Column(modifier.fillMaxWidth().clip(BigShape).background(MaterialTheme.colorScheme.surface).padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp), content = content)
+    Column(
+        modifier.fillMaxWidth().clip(BigShape).background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outline, BigShape).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        content = content
+    )
 }
 
 @Composable

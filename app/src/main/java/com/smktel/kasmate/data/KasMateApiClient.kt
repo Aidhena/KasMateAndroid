@@ -84,7 +84,8 @@ class KasMateApiClient(address: String) {
                         amountDue = due,
                         amountPaid = paid,
                         assessedAmount = assessed,
-                        isArchived = row.optBoolean("isArchived")
+                        isArchived = row.optBoolean("isArchived"),
+                        isIuran = row.textOrEmpty("type").equals("iuran", ignoreCase = true)
                     )
                 )
             }
@@ -120,7 +121,9 @@ class KasMateApiClient(address: String) {
                 myBills = bills,
                 expenses = expenses,
                 totalIncome = summaryData.optLong("classIncome"),
-                totalExpenses = summaryData.optLong("classExpensesTotal")
+                totalExpenses = summaryData.optLong("classExpensesTotal"),
+                totalIuranCollected = summaryData.optLong("classIuranCollected"),
+                totalIuranTarget = summaryData.optLong("classIuranTarget")
             )
         )
     }
