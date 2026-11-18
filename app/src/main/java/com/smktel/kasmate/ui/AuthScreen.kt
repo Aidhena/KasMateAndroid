@@ -92,7 +92,8 @@ private fun AuthField(
     onChange: (String) -> Unit,
     label: String,
     password: Boolean = false,
-    icon: ImageVector? = null
+    icon: ImageVector? = null,
+    keyboardType: KeyboardType = if (password) KeyboardType.Password else KeyboardType.Text
 ) {
     var visible by remember { mutableStateOf(false) }
     val trailing: (@Composable () -> Unit)? = if (password) {
@@ -112,7 +113,7 @@ private fun AuthField(
         visualTransformation =
             if (password && !visible) PasswordVisualTransformation() else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(
-            keyboardType = if (password) KeyboardType.Password else KeyboardType.Text
+            keyboardType = keyboardType
         ),
         leadingIcon = icon?.let { { Icon(it, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) } },
         trailingIcon = trailing,
@@ -121,13 +122,14 @@ private fun AuthField(
 }
 
 @Composable
-private fun AuthButton(text: String, onClick: () -> Unit) {
+private fun AuthButton(text: String, enabled: Boolean = true, onClick: () -> Unit) {
     val interaction = androidx.compose.runtime.remember { MutableInteractionSource() }
     val pressed = interaction.collectIsPressedAsState().value
     val scale = animateFloatAsState(if (pressed) .97f else 1f, animationSpec = tween(180), label = "button scale")
     val shape = RoundedCornerShape(14.dp)
     Button(
         onClick = onClick,
+        enabled = enabled,
         interactionSource = interaction,
         modifier = Modifier.fillMaxWidth().height(54.dp).graphicsLayer { scaleX = scale.value; scaleY = scale.value }
             .clip(shape).background(Brush.linearGradient(listOf(DeepRed, Red, SoftRed))),
@@ -139,10 +141,16 @@ private fun AuthButton(text: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun LoginScreen(onLogin: (String) -> Unit, onGoRegister: () -> Unit) {
-    var username by remember { mutableStateOf("") }
+fun LoginScreen(
+    initialServerAddress: String,
+    isLoading: Boolean,
+    errorMessage: String?,
+    onLogin: (String, String, String, String) -> Unit
+) {
+    var studentName by remember { mutableStateOf("") }
+    var nis by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
+    var validationError by remember { mutableStateOf<String?>(null) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         AuthHeader("KasMate", "Keuangan kelas, lebih transparan")
@@ -153,58 +161,21 @@ fun LoginScreen(onLogin: (String) -> Unit, onGoRegister: () -> Unit) {
             shadowElevation = 3.dp
         ) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Text("Selamat datang kembali", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                Text("Masuk untuk melihat tagihan dan kabar kas kelas.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                AuthField(username, { username = it }, "Username", icon = Icons.Default.Person)
+                Text("Masuk sebagai siswa", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                Text("Gunakan akun yang diberikan admin kelas.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                AuthField(studentName, { studentName = it; validationError = null }, "Nama siswa", icon = Icons.Default.Person)
+                AuthField(nis, { nis = it; validationError = null }, "NIS (opsional, jika nama sama)", keyboardType = KeyboardType.Number)
                 AuthField(password, { password = it }, "Password", password = true, icon = Icons.Default.Lock)
-                error?.let { Text(it, color = MaterialTheme.colorScheme.tertiary) }
-                AuthButton("MASUK") {
-                    error = if (username.isBlank() || password.isBlank()) {
-                        "Username dan password wajib diisi"
-                    } else null
-                    if (error == null) onLogin(username.trim().substringBefore('@').substringBefore(' '))
-                }
-                TextButton(onClick = onGoRegister, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                    Text("Belum punya akun? Daftar", color = Red, fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun RegisterScreen(onRegister: (String) -> Unit, onGoLogin: () -> Unit) {
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var confirm by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        AuthHeader("Buat akun", "Mulai kelola kas dengan lebih mudah")
-        Surface(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 20.dp, bottom = 24.dp),
-            shape = BigShape,
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 3.dp
-        ) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Text("Daftar ke KasMate", fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                AuthField(username, { username = it }, "Username", icon = Icons.Default.Person)
-                AuthField(password, { password = it }, "Password", password = true, icon = Icons.Default.Lock)
-                AuthField(confirm, { confirm = it }, "Ulangi password", password = true, icon = Icons.Default.Lock)
-                error?.let { Text(it, color = MaterialTheme.colorScheme.tertiary) }
-                AuthButton("DAFTAR") {
-                    error = when {
-                        username.isBlank() -> "Username wajib diisi"
-                        password.length < 6 -> "Password minimal 6 karakter"
-                        password != confirm -> "Konfirmasi password tidak sama"
+                (validationError ?: errorMessage)?.let { Text(it, color = MaterialTheme.colorScheme.tertiary, fontSize = 13.sp) }
+                AuthButton(if (isLoading) "MENGHUBUNGKAN..." else "MASUK", enabled = !isLoading) {
+                    validationError = when {
+                        studentName.isBlank() -> "Nama siswa wajib diisi."
+                        password.isBlank() -> "Password wajib diisi."
                         else -> null
                     }
-                    if (error == null) onRegister(username.trim().substringBefore('@').substringBefore(' '))
+                    if (validationError == null) onLogin(initialServerAddress, studentName.trim(), nis.trim(), password)
                 }
-                TextButton(onClick = onGoLogin, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                    Text("Sudah punya akun? Masuk", color = Red, fontWeight = FontWeight.Bold)
-                }
+                Text("Akun siswa dibuat oleh admin/bendahara. Password awal: 12345678.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             }
         }
     }
