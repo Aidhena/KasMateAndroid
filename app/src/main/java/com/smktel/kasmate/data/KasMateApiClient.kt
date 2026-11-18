@@ -84,7 +84,8 @@ class KasMateApiClient(address: String) {
                         amountDue = due,
                         amountPaid = paid,
                         assessedAmount = assessed,
-                        isArchived = row.optBoolean("isArchived")
+                        isArchived = row.optBoolean("isArchived"),
+                        isIuran = row.textOrEmpty("type").equals("iuran", ignoreCase = true)
                     )
                 )
             }
@@ -120,7 +121,9 @@ class KasMateApiClient(address: String) {
                 myBills = bills,
                 expenses = expenses,
                 totalIncome = summaryData.optLong("classIncome"),
-                totalExpenses = summaryData.optLong("classExpensesTotal")
+                totalExpenses = summaryData.optLong("classExpensesTotal"),
+                totalIuranCollected = summaryData.optLong("classIuranCollected"),
+                totalIuranTarget = summaryData.optLong("classIuranTarget")
             )
         )
     }
@@ -334,7 +337,7 @@ class KasMateApiClient(address: String) {
                 throw IllegalArgumentException("Alamat server tidak valid.")
             }
             if ((uri.scheme != "http" && uri.scheme != "https") || uri.host.isNullOrBlank()) {
-                throw IllegalArgumentException("Gunakan IP server seperti 10.199.241.182 atau alamat http/https.")
+                throw IllegalArgumentException("Gunakan IP server seperti 192.168.18.9 atau alamat http/https.")
             }
             var path = uri.rawPath.orEmpty().trimEnd('/')
             if (path.isBlank() || path == "/") path = "/KasMateAPI"

@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -92,6 +93,7 @@ fun CalendarOverlay(
 ) {
     var month by remember { mutableStateOf(Calendar.getInstance().apply { set(Calendar.DAY_OF_MONTH, 1) }) }
     var selectedDay by remember { mutableStateOf<Long?>(null) }
+    val motionEnabled = LocalMotionEnabled.current
 
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         BoxWithConstraints(Modifier.fillMaxWidth().fillMaxHeight(.94f).padding(12.dp)) {
@@ -119,8 +121,8 @@ fun CalendarOverlay(
                         AnimatedVisibility(
                             visible = day != null,
                             modifier = Modifier.align(Alignment.CenterEnd),
-                            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
-                            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+                            enter = if (motionEnabled) slideInHorizontally(tween(220), initialOffsetX = { it }) + fadeIn(tween(180)) else fadeIn(tween(0)),
+                            exit = if (motionEnabled) slideOutHorizontally(tween(150), targetOffsetX = { it }) + fadeOut(tween(120)) else fadeOut(tween(0))
                         ) {
                             day?.let { selected ->
                                 CalendarDaySidebar(

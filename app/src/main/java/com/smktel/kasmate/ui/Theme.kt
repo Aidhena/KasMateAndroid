@@ -9,6 +9,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
@@ -16,8 +19,39 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import android.animation.ValueAnimator
+import android.content.Context
+import android.os.Build
+import android.provider.Settings
+import com.smktel.kasmate.R
+
+enum class AppFont(val label: String) {
+    SANS("Sans serif"), SERIF("Serif"), MONOSPACE("Monospace")
+}
+
+val LocalMotionEnabled = staticCompositionLocalOf { true }
+
+private val PlusJakartaSans = FontFamily(
+    Font(R.font.plus_jakarta_sans_regular, FontWeight.Normal),
+    Font(R.font.plus_jakarta_sans_medium, FontWeight.Medium),
+    Font(R.font.plus_jakarta_sans_semibold, FontWeight.SemiBold),
+    Font(R.font.plus_jakarta_sans_bold, FontWeight.Bold),
+    Font(R.font.plus_jakarta_sans_extrabold, FontWeight.ExtraBold)
+)
+
+private fun systemAnimationsEnabled(context: Context): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        ValueAnimator.areAnimatorsEnabled()
+    } else {
+        Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
+    }
+}
 
 val Red = Color(0xFFE31E24)
 val DeepRed = Color(0xFFB5121B)
@@ -58,9 +92,26 @@ val BigShape = RoundedCornerShape(24.dp)
 @Composable
 fun KasTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    font: AppFont = AppFont.SANS,
     content: @Composable () -> Unit
 ) {
-    val fontFamily = FontFamily.SansSerif
+    val context = LocalContext.current
+    val view = LocalView.current
+    val motionEnabled = androidx.compose.runtime.remember(context) { systemAnimationsEnabled(context) }
+    if (!view.isInEditMode) {
+        SideEffect {
+            (context as? android.app.Activity)?.window?.let { window ->
+                val insetsController = WindowCompat.getInsetsController(window, view)
+                insetsController.isAppearanceLightStatusBars = !darkTheme
+                insetsController.isAppearanceLightNavigationBars = !darkTheme
+            }
+        }
+    }
+    val fontFamily = when (font) {
+        AppFont.SANS -> PlusJakartaSans
+        AppFont.SERIF -> FontFamily.Serif
+        AppFont.MONOSPACE -> FontFamily.Monospace
+    }
     val typography = MaterialTheme.typography.let { base ->
         androidx.compose.material3.Typography(
             displayLarge = base.displayLarge.copy(fontFamily = fontFamily, fontWeight = FontWeight.ExtraBold, letterSpacing = (-.7).sp),
@@ -77,7 +128,8 @@ fun KasTheme(
             labelSmall = base.labelSmall.copy(fontFamily = fontFamily)
         )
     }
-    MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors, typography = typography) {
+    CompositionLocalProvider(LocalMotionEnabled provides motionEnabled) {
+      MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors, typography = typography) {
         val background = if (darkTheme) {
             Brush.linearGradient(
                 colors = listOf(Color(0xFF111216), Color(0xFF1B1316), Color(0xFF111216)),
@@ -100,5 +152,6 @@ fun KasTheme(
                 content()
             }
         }
+      }
     }
 }

@@ -11,7 +11,8 @@ data class Bill(
     val amountDue: Long = amount,
     val amountPaid: Long = 0,
     val assessedAmount: Long = amount,
-    val isArchived: Boolean = false
+    val isArchived: Boolean = false,
+    val isIuran: Boolean = false
 )
 
 data class Expense(
@@ -27,7 +28,9 @@ data class KasSummary(
     val myBills: List<Bill>,
     val expenses: List<Expense>,
     val totalIncome: Long = 0,
-    val totalExpenses: Long = 0
+    val totalExpenses: Long = 0,
+    val totalIuranCollected: Long = 0,
+    val totalIuranTarget: Long = 0
 )
 
 data class StudentPaymentRequest(

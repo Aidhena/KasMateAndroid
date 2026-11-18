@@ -7,10 +7,10 @@ The Android app uses the same MariaDB data as the ClassFinance desktop app throu
 1. On the computer that runs XAMPP, start **Apache** and **MySQL**.
 2. Keep the KasMate API deployed at `D:\xampp\htdocs\KasMateAPI`.
 3. Connect the phone and computer to the same trusted Wi-Fi network.
-4. On the Android sign-in screen, enter the computer's current LAN IP (`10.199.241.182`) or the full API URL, such as `http://10.199.241.182/KasMateAPI/`.
+4. The Android app connects to the computer's current LAN IP, `192.168.18.9`, using `http://192.168.18.9/KasMateAPI/`.
 5. Sign in with the student's name and password. Enter NIS when more than one student has the same name.
 
-The server IP can change when the computer reconnects to Wi-Fi. Update the address on the sign-in screen if that happens. Apache must accept inbound HTTP traffic on port 80; allow Apache on the Private network in Windows Firewall when needed.
+The server IP can change when the computer reconnects to Wi-Fi. If it changes, update `DEFAULT_ADDRESS` in `app/src/main/java/com/smktel/kasmate/data/KasMateServerConfig.kt`, then rebuild and install the app. Saved addresses from older builds migrate to the current default on launch. Apache must accept inbound HTTP traffic on port 80; allow Apache on the Private network in Windows Firewall when needed.
 
 ## Student accounts
 

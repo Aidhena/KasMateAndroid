@@ -2,9 +2,13 @@ package com.smktel.kasmate
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings as AndroidSettings
 import android.widget.Toast
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +30,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.smktel.kasmate.data.KasMateApiClient
 import com.smktel.kasmate.data.KasMateApiException
+import com.smktel.kasmate.data.KasMateServerConfig
 import com.smktel.kasmate.data.KasSummary
 import com.smktel.kasmate.data.StudentPaymentRequest
 import com.smktel.kasmate.data.StudentProfile
@@ -39,9 +44,11 @@ import com.smktel.kasmate.notif.scheduleServerNotificationSync
 import com.smktel.kasmate.notif.syncServerNotifications
 import com.smktel.kasmate.notif.unregisterPushDevice
 import com.smktel.kasmate.ui.AppLanguage
+import com.smktel.kasmate.ui.AppFont
 import com.smktel.kasmate.ui.HomeScreen
 import com.smktel.kasmate.ui.KasTheme
 import com.smktel.kasmate.ui.LoginScreen
+import com.smktel.kasmate.ui.KasMateLaunchScreen
 import com.smktel.kasmate.ui.WelcomeScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -50,9 +57,7 @@ import kotlinx.coroutines.launch
 private const val PREFERENCES = "kasmate_preferences"
 private const val PREF_API_BASE_URL = "api_base_url"
 private const val PREF_STUDENT_TOKEN = "student_access_token"
-private const val DEFAULT_API_ADDRESS = "10.199.241.182"
 private const val STUDENT_REFRESH_INTERVAL_MILLIS = 15_000L
-private val PREVIOUS_API_ADDRESSES = listOf("192.168.18.9", "10.210.34.103")
 
 private data class ActiveStudentSession(
     val token: String,
@@ -63,20 +68,41 @@ private data class ActiveStudentSession(
 
 class MainActivity : ComponentActivity() {
 
-    private val askNotifPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private var notificationsAllowed by mutableStateOf(false)
+    private var notificationPermissionDenied by mutableStateOf(false)
+    private val askNotifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        notificationsAllowed = granted && NotificationManagerCompat.from(this).areNotificationsEnabled()
+        notificationPermissionDenied = !granted
+    }
+
+    private fun updateNotificationAccess() {
+        notificationsAllowed = NotificationManagerCompat.from(this).areNotificationsEnabled()
+    }
+
+    private fun requestNotificationAccess() {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            if (notificationPermissionDenied) {
+                startActivity(Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, packageName))
+            } else {
+                askNotifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        } else {
+            startActivity(Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, packageName))
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         createChannel(this)
         cancelLegacyDailyReminder(this)
-        if (Build.VERSION.SDK_INT >= 33) {
-            askNotifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        updateNotificationAccess()
 
         setContent {
             val prefs = remember { getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE) }
             var darkMode by remember { mutableStateOf(prefs.getBoolean("dark_mode", false)) }
+            var font by remember {
+                mutableStateOf(runCatching { AppFont.valueOf(prefs.getString("font_family", AppFont.SANS.name)!!) }.getOrDefault(AppFont.SANS))
+            }
             var language by remember {
                 mutableStateOf(
                     runCatching {
@@ -86,12 +112,7 @@ class MainActivity : ComponentActivity() {
             }
             var serverAddress by remember {
                 val savedAddress = prefs.getString(PREF_API_BASE_URL, null)
-                val initialAddress = when {
-                    savedAddress.isNullOrBlank() -> DEFAULT_API_ADDRESS
-                    else -> PREVIOUS_API_ADDRESSES.fold(savedAddress) { address, previousAddress ->
-                        address.replace(previousAddress, DEFAULT_API_ADDRESS)
-                    }
-                }
+                val initialAddress = KasMateServerConfig.migrateSavedAddress(savedAddress)
                 if (savedAddress != initialAddress) {
                     prefs.edit().putString(PREF_API_BASE_URL, initialAddress).apply()
                 }
@@ -99,9 +120,10 @@ class MainActivity : ComponentActivity() {
             }
             var activeSession by remember { mutableStateOf<ActiveStudentSession?>(null) }
             var paymentRequests by remember { mutableStateOf(emptyList<StudentPaymentRequest>()) }
-            var hasSeenWelcome by remember { mutableStateOf(prefs.getBoolean("welcome_seen", false)) }
+            var welcomeVisible by remember { mutableStateOf(true) }
             var isRestoringSession by remember { mutableStateOf(true) }
             var isSigningIn by remember { mutableStateOf(false) }
+            var loginSuccess by remember { mutableStateOf(false) }
             var authError by remember { mutableStateOf<String?>(null) }
             val scope = rememberCoroutineScope()
             val lifecycleOwner = LocalLifecycleOwner.current
@@ -135,6 +157,7 @@ class MainActivity : ComponentActivity() {
                         if (exception is KasMateApiException && exception.statusCode == 401) {
                             prefs.edit().remove(PREF_STUDENT_TOKEN).apply()
                         }
+                        welcomeVisible = false
                         authError = errorFor(exception)
                     }
                 }
@@ -167,25 +190,23 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            KasTheme(darkTheme = darkMode) {
+            KasTheme(darkTheme = darkMode, font = font) {
                 val session = activeSession
                 when {
-                    isRestoringSession -> Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
-                    session == null && !hasSeenWelcome -> WelcomeScreen {
-                        prefs.edit().putBoolean("welcome_seen", true).apply()
-                        hasSeenWelcome = true
+                    isRestoringSession -> KasMateLaunchScreen(english = language == AppLanguage.ENGLISH)
+                    session == null && welcomeVisible -> WelcomeScreen(english = language == AppLanguage.ENGLISH) {
+                        welcomeVisible = false
                     }
                     session == null -> LoginScreen(
                         initialServerAddress = serverAddress,
                         isLoading = isSigningIn,
                         errorMessage = authError,
+                        loginSuccess = loginSuccess,
+                        english = language == AppLanguage.ENGLISH,
                         onLogin = { address, name, nis, password ->
                             if (!isSigningIn) {
                                 isSigningIn = true
+                                loginSuccess = false
                                 authError = null
                                 scope.launch {
                                     try {
@@ -211,14 +232,20 @@ class MainActivity : ComponentActivity() {
                                             )
                                         }
                                         registerPushDevice(applicationContext)
-                                        activeSession = ActiveStudentSession(
+                                        val signedInSession = ActiveStudentSession(
                                             login.token,
                                             client.baseUrl,
                                             remote.profile,
                                             remote.summary
                                         )
+                                        loginSuccess = true
+                                        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O || android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                                            delay(760)
+                                        }
+                                        activeSession = signedInSession
                                         scheduleDailyReminder(applicationContext)
                                     } catch (exception: Exception) {
+                                        loginSuccess = false
                                         authError = errorFor(exception)
                                     } finally {
                                         isSigningIn = false
@@ -263,37 +290,18 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         },
-                        onRefresh = {
-                            val current = activeSession
-                            if (current != null) {
-                                scope.launch {
-                                    try {
-                                        val client = KasMateApiClient(current.serverAddress)
-                                        val remote = client.loadDashboard(current.token)
-                                        paymentRequests = runCatching { client.loadPaymentRequests(current.token) }.getOrDefault(paymentRequests)
-                                        if (activeSession?.token == current.token) {
-                                            activeSession = current.copy(profile = remote.profile, summary = remote.summary)
-                                        }
-                                    } catch (exception: Exception) {
-                                        if (exception is KasMateApiException && exception.statusCode == 401) {
-                                            cancelServerNotificationSync(this@MainActivity, current.profile.id)
-                                            cancelLegacyDailyReminder(applicationContext)
-                                            prefs.edit().putLong("overdue_amount", 0L).putInt("overdue_days", 0).apply()
-                                            prefs.edit().remove(PREF_STUDENT_TOKEN).apply()
-                                            activeSession = null
-                                            authError = "Sesi berakhir. Silakan masuk kembali."
-                                        } else {
-                                            Toast.makeText(this@MainActivity, errorFor(exception), Toast.LENGTH_LONG).show()
-                                        }
-                                    }
-                                }
-                            }
-                        },
                         darkMode = darkMode,
                         onDarkModeChange = {
                             darkMode = it
                             prefs.edit().putBoolean("dark_mode", it).apply()
                         },
+                        font = font,
+                        onFontChange = {
+                            font = it
+                            prefs.edit().putString("font_family", it.name).apply()
+                        },
+                        notificationsAllowed = notificationsAllowed,
+                        onRequestNotifications = ::requestNotificationAccess,
                         language = language,
                         onLanguageChange = {
                             language = it
@@ -303,6 +311,8 @@ class MainActivity : ComponentActivity() {
                             val signedIn = activeSession
                             val installationId = prefs.getString(PREF_FCM_INSTALLATION_ID, null)
                             activeSession = null
+                            welcomeVisible = true
+                            loginSuccess = false
                             cancelLegacyDailyReminder(applicationContext)
                             prefs.edit().putLong("overdue_amount", 0L).putInt("overdue_days", 0).apply()
                             prefs.edit()
@@ -322,6 +332,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateNotificationAccess()
     }
 
     private fun errorFor(exception: Exception): String = when (exception) {
