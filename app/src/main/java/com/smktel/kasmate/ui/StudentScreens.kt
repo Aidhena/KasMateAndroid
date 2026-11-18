@@ -354,15 +354,7 @@ fun StudentLedgerScreen(summary: KasSummary, english: Boolean) {
                 Text(if (english) "Tap to view expense details and receipt status" else "Ketuk untuk melihat detail dan status nota", color = Red, fontSize = 10.sp, modifier = Modifier.padding(start = 54.dp, top = 6.dp))
             }
         }
-        item { PageSectionTitle(if (english) "Your payment progress" else "Ringkasan pembayaran") }
-        item {
-            val paidCount = summary.myBills.count { it.status == PaymentStatus.LUNAS }
-            val contributedCount = summary.myBills.count { it.amountPaid > 0 }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                AchievementCard(Modifier.weight(1f), "🏅", if (english) "Bills paid" else "Tagihan lunas", "$paidCount/${summary.myBills.size}")
-                AchievementCard(Modifier.weight(1f), "💝", if (english) "Bills paid toward" else "Pernah membayar", "$contributedCount")
-            }
-        }
+        item { PaymentProgressCard(summary, english) }
         item { Spacer(Modifier.height(14.dp)) }
     }
     selectedExpense?.let { expense ->
@@ -371,11 +363,58 @@ fun StudentLedgerScreen(summary: KasSummary, english: Boolean) {
 }
 
 @Composable
-private fun AchievementCard(modifier: Modifier, emoji: String, title: String, progress: String) {
-    StudentPanel(modifier) {
-        Text(emoji, fontSize = 24.sp)
-        Text(title, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-        Text(progress, color = Red, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+private fun PaymentProgressCard(summary: KasSummary, english: Boolean) {
+    val totalAmount = summary.myBills.sumOf { it.amountPaid + it.amountDue }
+    val paidAmount = summary.myBills.sumOf { it.amountPaid }
+    val progress = if (totalAmount > 0) {
+        (paidAmount.toFloat() / totalAmount.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val paidCount = summary.myBills.count { it.status == PaymentStatus.LUNAS }
+    val contributedCount = summary.myBills.count { it.amountPaid > 0 }
+
+    StudentPanel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Flag, contentDescription = null, tint = Red)
+            Spacer(Modifier.width(9.dp))
+            Text(
+                if (english) "Your payment progress" else "Progres pembayaranmu",
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                if (english) "Amount paid" else "Jumlah dibayar",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp
+            )
+            Text(
+                if (totalAmount > 0) "${rupiah(paidAmount)} / ${rupiah(totalAmount)}" else "—",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
+            color = Red,
+            trackColor = Red.copy(alpha = .12f)
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Column {
+                Text(if (english) "Bills paid" else "Tagihan lunas", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Text("$paidCount / ${summary.myBills.size}", color = Red, fontWeight = FontWeight.Bold)
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(if (english) "Bills contributed to" else "Tagihan pernah dibayar", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Text("$contributedCount", color = Red, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 
