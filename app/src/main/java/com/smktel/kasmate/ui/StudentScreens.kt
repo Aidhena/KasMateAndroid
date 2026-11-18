@@ -221,9 +221,6 @@ fun StudentLedgerScreen(summary: KasSummary, english: Boolean) {
             }
         }
         item { ClassMissionCard(english) }
-        item { PageSectionTitle(if (english) "Your achievements" else "Badge pencapaianmu") }
-        item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { AchievementCard(Modifier.weight(1f), "🏅", if (english) "On-time star" else "Sultan tepat waktu", "2/3"); AchievementCard(Modifier.weight(1f), "💝", if (english) "Loyal donor" else "Donatur setia", "1x") } }
-        item { LeaderboardCard(english) }
         item { Spacer(Modifier.height(14.dp)) }
     }
     selectedExpense?.let { expense ->
@@ -243,25 +240,6 @@ private fun ClassMissionCard(english: Boolean) {
 }
 
 @Composable
-private fun AchievementCard(modifier: Modifier, emoji: String, title: String, progress: String) {
-    StudentPanel(modifier) {
-        Text(emoji, fontSize = 24.sp)
-        Text(title, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-        Text(progress, color = Red, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-    }
-}
-
-@Composable
-private fun LeaderboardCard(english: Boolean) {
-    StudentPanel {
-        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Leaderboard, null, tint = Red); Spacer(Modifier.width(9.dp)); Column { Text(if (english) "Class leaderboard" else "Papan peringkat kelas", fontWeight = FontWeight.Bold); Text(if (english) "Anonymous view" else "Nama disamarkan untuk menjaga privasi", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-        listOf("🥇  Siswa A" to "5 kali", "🥈  Siswa B" to "4 kali", "🥉  Kamu" to "2 kali").forEach { (name, score) ->
-            Row(Modifier.fillMaxWidth().padding(top = 9.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(name, fontSize = 13.sp); Text(score, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) }
-        }
-    }
-}
-
-@Composable
 fun KasMateAssistantScreen(summary: KasSummary, userName: String, english: Boolean) {
     data class Message(val fromUser: Boolean, val text: String)
     val messages = remember(userName) { mutableStateListOf(Message(false, if (english) "Hi $userName! I can help check bills, class balance, and expense records. This demo assistant uses local sample data." else "Halo $userName! Aku bisa bantu cek tagihan, saldo kelas, dan catatan pengeluaran. Asisten demo ini memakai data contoh di perangkat.")) }
@@ -275,9 +253,11 @@ fun KasMateAssistantScreen(summary: KasSummary, userName: String, english: Boole
     val overdueBill = summary.myBills.firstOrNull {
         it.status == PaymentStatus.BELUM && it.dueDateMillis < System.currentTimeMillis()
     }
+    val overdueDays = overdueBill?.let { ((System.currentTimeMillis() - it.dueDateMillis) / 86_400_000L).toInt().coerceAtLeast(1) } ?: 0
     val hasUnpaidBill = summary.myBills.any { it.status == PaymentStatus.BELUM }
     val hasPaidBill = summary.myBills.any { it.status == PaymentStatus.LUNAS }
     val assistantMood = when {
+        overdueDays >= 7 -> MascotMood.ANGRY
         overdueBill != null -> MascotMood.SAD
         !hasUnpaidBill && hasPaidBill -> MascotMood.HAPPY
         else -> MascotMood.NEUTRAL
@@ -286,8 +266,9 @@ fun KasMateAssistantScreen(summary: KasSummary, userName: String, english: Boole
         PageHeading(if (english) "KasMate assistant" else "Asisten KasMate", if (english) "A private guide to class finances" else "Teman untuk memahami uang kas kelas")
         KasMateMascotBanner(
             mood = assistantMood,
-            assistantLabel = if (english) "KasMate AI · Demo" else "KasMate AI · Demo lokal",
+            assistantLabel = "KasMate AI",
             message = when (assistantMood) {
+                MascotMood.ANGRY -> if (english) "I'm worried: ${rupiah(overdueBill?.amount ?: 0)} has been overdue for $overdueDays days. Let's fix it." else "Aku khawatir: kas ${rupiah(overdueBill?.amount ?: 0)} sudah menunggak $overdueDays hari. Yuk, kita bereskan."
                 MascotMood.SAD -> if (english) "A class bill is past due. Ask me what is still unpaid." else "Ada tagihan kas yang lewat tempo. Tanya aku untuk melihat yang belum dibayar."
                 MascotMood.HAPPY -> if (english) "Your dues are paid! ${financeFunFact(true)}" else "Kasmu lunas! ${financeFunFact(false)}"
                 else -> if (english) "Ask me about your bills, the class balance, or a fun finance fact." else "Tanya soal tagihan, saldo kelas, atau minta fun fact keuangan!"

@@ -15,10 +15,10 @@ import com.smktel.kasmate.notif.scheduleDailyReminder
 import com.smktel.kasmate.ui.HomeScreen
 import com.smktel.kasmate.ui.KasTheme
 import com.smktel.kasmate.ui.LoginScreen
-import com.smktel.kasmate.ui.RegisterScreen
+import com.smktel.kasmate.ui.WelcomeScreen
 import com.smktel.kasmate.ui.AppLanguage
 
-enum class Screen { LOGIN, REGISTER, HOME }
+enum class Screen { WELCOME, LOGIN, HOME }
 
 class MainActivity : ComponentActivity() {
 
@@ -37,16 +37,12 @@ class MainActivity : ComponentActivity() {
             var darkMode by remember { mutableStateOf(prefs.getBoolean("dark_mode", false)) }
             var language by remember { mutableStateOf(runCatching { AppLanguage.valueOf(prefs.getString("language", "INDONESIAN")!!) }.getOrDefault(AppLanguage.INDONESIAN)) }
             KasTheme(darkTheme = darkMode) {
-                var screen by remember { mutableStateOf(Screen.LOGIN) }
+                var screen by remember { mutableStateOf(if (prefs.getBoolean("welcome_seen", false)) Screen.LOGIN else Screen.WELCOME) }
                 var activeUserName by remember { mutableStateOf("Aidhena") }
                 when (screen) {
+                    Screen.WELCOME -> WelcomeScreen(onGetStarted = { prefs.edit().putBoolean("welcome_seen", true).apply(); screen = Screen.LOGIN })
                     Screen.LOGIN -> LoginScreen(
                         onLogin = { username -> activeUserName = username; screen = Screen.HOME },
-                        onGoRegister = { screen = Screen.REGISTER }
-                    )
-                    Screen.REGISTER -> RegisterScreen(
-                        onRegister = { username -> activeUserName = username; screen = Screen.HOME },
-                        onGoLogin = { screen = Screen.LOGIN }
                     )
                     Screen.HOME -> HomeScreen(
                         userName = activeUserName,

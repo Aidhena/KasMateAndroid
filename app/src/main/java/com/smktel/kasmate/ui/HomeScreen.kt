@@ -5,6 +5,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,8 +17,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.asImageBitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +44,7 @@ import com.smktel.kasmate.data.*
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.*
+import android.speech.tts.TextToSpeech
 import kotlinx.coroutines.delay
 
 enum class AppPage { HOME, PAYMENTS, LEDGER, ASSISTANT, SETTINGS, PROFILE }
@@ -62,8 +70,20 @@ fun HomeScreen(
     var paymentRequests by remember { mutableStateOf(emptyList<DemoPaymentRequest>()) }
     var disputeTickets by remember { mutableStateOf(emptyList<DemoDispute>()) }
     var calendarOpen by remember { mutableStateOf(false) }
+    var profileImageUri by remember { mutableStateOf(calendarPrefs.getString("profile_image_uri", null)) }
+    val profilePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) { profileImageUri = uri.toString(); calendarPrefs.edit().putString("profile_image_uri", uri.toString()).apply() }
+    }
     var paymentCelebration by remember { mutableStateOf(false) }
     val english = language == AppLanguage.ENGLISH
+    val startOfToday = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
+    val overdueBills = s.myBills.filter { it.status == PaymentStatus.BELUM && it.dueDateMillis < startOfToday }
+    val overdueAmount = overdueBills.sumOf { it.amount }
+    val maxOverdueDays = overdueBills.maxOfOrNull { ((startOfToday - it.dueDateMillis) / 86_400_000L).toInt().coerceAtLeast(1) } ?: 0
+    LaunchedEffect(overdueAmount, maxOverdueDays) {
+        calendarPrefs.edit().putLong("overdue_amount", overdueAmount).putInt("overdue_days", maxOverdueDays).apply()
+    }
+    OverdueVoiceReminder(overdueAmount, english, calendarPrefs)
     LaunchedEffect(page, paymentCelebration) {
         if (page == AppPage.HOME && paymentCelebration) {
             delay(8_000)
@@ -71,6 +91,7 @@ fun HomeScreen(
         }
     }
     Scaffold(
+        containerColor = Color.Transparent,
         floatingActionButton = {
             FloatingActionButton(onClick = { calendarOpen = true }, containerColor = Red, contentColor = Color.White,
                 shape = RoundedCornerShape(19.dp)) {
@@ -81,7 +102,7 @@ fun HomeScreen(
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 val compact = maxWidth < 392.dp
                 val labelSize = if (compact) 10.sp else 11.sp
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+                NavigationBar(Modifier.padding(horizontal = 14.dp, vertical = 8.dp).shadow(12.dp, RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)), containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp, windowInsets = WindowInsets(0)) {
                     NavigationBarItem(page == AppPage.HOME, { page = AppPage.HOME }, icon = { Icon(Icons.Default.Home, if (english) "Home" else "Beranda") }, label = { NavLabel(if (english) "Home" else "Beranda", labelSize) }, colors = navColors())
                     NavigationBarItem(page == AppPage.PAYMENTS, { page = AppPage.PAYMENTS }, icon = { Icon(Icons.Default.Payments, if (english) "Pay" else "Bayar") }, label = { NavLabel(if (english) "Pay" else "Bayar", labelSize) }, colors = navColors())
                     NavigationBarItem(page == AppPage.LEDGER, { page = AppPage.LEDGER }, icon = { Icon(Icons.Default.AccountBalance, if (english) "Class ledger" else "Kas kelas") }, label = { NavLabel(if (compact) { if (english) "Class" else "Kas" } else { if (english) "Class" else "Kas kelas" }, labelSize) }, colors = navColors())
@@ -100,7 +121,7 @@ fun HomeScreen(
                 AppPage.LEDGER -> StudentLedgerScreen(s, english)
                 AppPage.ASSISTANT -> KasMateAssistantScreen(s, userName, english)
                 AppPage.SETTINGS -> SettingsPage(darkMode, onDarkModeChange, language, onLanguageChange, english) { page = AppPage.PROFILE }
-                AppPage.PROFILE -> ProfilePage(english, userName)
+                AppPage.PROFILE -> ProfilePage(english, userName, profileImageUri) { profilePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
             }
         }
     }
@@ -156,15 +177,18 @@ private fun Dashboard(s: KasSummary, english: Boolean, userName: String, payment
         item {
             val unpaid = s.myBills.firstOrNull { it.status == PaymentStatus.BELUM }
             val today = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
+            val daysLate = unpaid?.takeIf { it.dueDateMillis < today }?.let { ((today - it.dueDateMillis) / 86_400_000L).toInt().coerceAtLeast(1) } ?: 0
             val mood = when {
                 paymentSubmitted -> MascotMood.EXCITED
-                unpaid != null && unpaid.dueDateMillis < today -> MascotMood.SAD
+                daysLate >= 7 -> MascotMood.ANGRY
+                daysLate > 0 -> MascotMood.SAD
                 unpaid != null -> MascotMood.NEUTRAL
                 s.myBills.any { it.status == PaymentStatus.LUNAS } -> MascotMood.HAPPY
                 else -> MascotMood.NEUTRAL
             }
             val message = when (mood) {
-                MascotMood.SAD -> if (english) "Looks like a bill is overdue. Let's settle it together." else "Yah, ada kas yang terlewat. Yuk, bereskan bareng-bareng!"
+                MascotMood.ANGRY -> if (english) "I'm getting worried! ${rupiah(unpaid?.amount ?: 0)} has been overdue for $daysLate days. Let's clear it today." else "Aku mulai khawatir! ${rupiah(unpaid?.amount ?: 0)} sudah menunggak $daysLate hari. Yuk, lunasi hari ini."
+                MascotMood.SAD -> if (english) "A bill of ${rupiah(unpaid?.amount ?: 0)} is overdue. Let's settle it together." else "Yah, kas ${rupiah(unpaid?.amount ?: 0)} terlewat. Yuk, bereskan bareng-bareng!"
                 MascotMood.NEUTRAL -> if (english) "A little reminder: pay class dues before the due date." else "Ingat bayar uang kas sebelum tanggal jatuh tempo, ya!"
                 MascotMood.HAPPY -> if (english) "Wonderful, your dues are paid! ${financeFunFact(true)}" else "Yeay, kasmu lunas! ${financeFunFact(false)}"
                 MascotMood.EXCITED -> if (english) "Yay! Your payment proof is sent. I'll cheer while it gets reviewed!" else "Yeay! Bukti bayarmu terkirim. Aku ikut senang sambil menunggu konfirmasi!"
@@ -191,6 +215,33 @@ private fun Dashboard(s: KasSummary, english: Boolean, userName: String, payment
         item { SectionTitle(if (english) "Recent expenses" else "Pengeluaran terbaru", if (english) "History" else "Riwayat") }
         items(s.expenses, key = { it.id }) { ExpenseRow(it) }
         item { Spacer(Modifier.height(12.dp)) }
+    }
+}
+
+@Composable
+private fun OverdueVoiceReminder(amount: Long, english: Boolean, prefs: android.content.SharedPreferences) {
+    val context = LocalContext.current
+    var ready by remember { mutableStateOf(false) }
+    val speech = remember(context) {
+        TextToSpeech(context) { status -> ready = status == TextToSpeech.SUCCESS }
+    }
+    DisposableEffect(speech) {
+        onDispose { speech.stop(); speech.shutdown() }
+    }
+    LaunchedEffect(ready, english) {
+        if (ready) speech.language = if (english) Locale.US else Locale("id", "ID")
+    }
+    LaunchedEffect(amount, english, ready) {
+        if (!ready || amount <= 0L) return@LaunchedEffect
+        val day = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        val key = "$day:$amount:${if (english) "en" else "id"}"
+        if (prefs.getString("overdue_spoken_key", null) != key) {
+            val number = NumberFormat.getInstance(if (english) Locale.US else Locale("id", "ID")).format(amount)
+            val message = if (english) "You have an overdue class payment of $number rupiah. Let's take care of it today."
+                else "Ada tunggakan uang kas sebesar $number rupiah. Yuk, bayar hari ini."
+            speech.speak(message, TextToSpeech.QUEUE_FLUSH, null, key)
+            prefs.edit().putString("overdue_spoken_key", key).apply()
+        }
     }
 }
 
@@ -351,6 +402,8 @@ private fun ExpenseRow(e: Expense) {
 @Composable
 private fun SettingsPage(dark: Boolean, onDark: (Boolean) -> Unit, language: AppLanguage, onLanguage: (AppLanguage) -> Unit, english: Boolean, onOpenProfile: () -> Unit) {
     var languageMenu by remember { mutableStateOf(false) }
+    var supportOpen by remember { mutableStateOf(false) }
+    var feedback by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(top = 26.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Text(if (english) "Settings" else "Pengaturan", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
         Text(if (english) "Personalize your KasMate experience" else "Atur pengalaman KasMate sesuai gayamu", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -369,7 +422,21 @@ private fun SettingsPage(dark: Boolean, onDark: (Boolean) -> Unit, language: App
             }
         }
         SettingCard(if (english) "ACCOUNT" else "AKUN") { Row(Modifier.fillMaxWidth().clickable(onClick = onOpenProfile), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { Icon(Icons.Default.Person, null, tint = Red); Column(Modifier.weight(1f)) { Text(if (english) "Profile" else "Profil", fontWeight = FontWeight.Bold); Text(if (english) "Manage your personal information" else "Kelola informasi pribadimu", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Icon(Icons.Default.ChevronRight, null) } }
+        SettingCard(if (english) "HELP & SUPPORT" else "BANTUAN & DUKUNGAN") {
+            Row(Modifier.fillMaxWidth().clickable { supportOpen = true }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.Default.Forum, null, tint = Red)
+                Column(Modifier.weight(1f)) { Text(if (english) "Suggestions and support" else "Kotak saran & dukungan", fontWeight = FontWeight.Bold); Text(if (english) "Tell us what can be improved" else "Kirim masukan atau laporkan kendala", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Icon(Icons.Default.ChevronRight, null)
+            }
+        }
     }
+    if (supportOpen) AlertDialog(
+        onDismissRequest = { supportOpen = false },
+        title = { Text(if (english) "Suggestions & support" else "Saran & dukungan") },
+        text = { OutlinedTextField(value = feedback, onValueChange = { feedback = it }, modifier = Modifier.fillMaxWidth(), minLines = 3, placeholder = { Text(if (english) "Write your suggestion or issue" else "Tulis saran atau kendala yang kamu alami") }) },
+        confirmButton = { TextButton(onClick = { supportOpen = false; feedback = "" }) { Text(if (english) "Done" else "Selesai", color = Red) } },
+        dismissButton = { TextButton(onClick = { supportOpen = false }) { Text(if (english) "Cancel" else "Batal") } }
+    )
 }
 
 @Composable
@@ -382,12 +449,18 @@ private fun SettingCard(title: String, content: @Composable ColumnScope.() -> Un
 }
 
 @Composable
-private fun ProfilePage(english: Boolean, userName: String) {
+private fun ProfilePage(english: Boolean, userName: String, imageUri: String?, onPickImage: () -> Unit) {
+    val context = LocalContext.current
     val displayName = userName.trim().ifBlank { if (english) "Student" else "Siswa" }
+    val avatar = remember(imageUri) { runCatching { imageUri?.let { context.contentResolver.openInputStream(Uri.parse(it))?.use(BitmapFactory::decodeStream) } }.getOrNull() }
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(if (english) "My profile" else "Profil saya", Modifier.fillMaxWidth(), fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
         Spacer(Modifier.height(22.dp))
-        Box(Modifier.size(100.dp).clip(CircleShape).background(Red), contentAlignment = Alignment.Center) { Text("A", color = Color.White, fontSize = 40.sp, fontWeight = FontWeight.ExtraBold) }
+        Box(Modifier.size(112.dp).clip(CircleShape).background(Red).clickable(onClick = onPickImage), contentAlignment = Alignment.Center) {
+            if (avatar != null) Image(avatar.asImageBitmap(), contentDescription = "Foto profil", modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+            else Text(displayName.take(1).uppercase(), color = Color.White, fontSize = 40.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Text(if (english) "Tap photo to change" else "Ketuk foto untuk mengganti", color = Red, fontSize = 12.sp, modifier = Modifier.clickable(onClick = onPickImage))
         Text(displayName, fontSize = 21.sp, fontWeight = FontWeight.Bold)
         Text(if (english) "Student · Class XI PPLG 2" else "Siswa · Kelas XI PPLG 2", color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(8.dp))

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -46,12 +47,19 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import com.smktel.kasmate.R
 
@@ -92,13 +100,16 @@ private fun AuthField(
     onChange: (String) -> Unit,
     label: String,
     password: Boolean = false,
-    icon: ImageVector? = null
+    icon: ImageVector? = null,
+    onPasswordVisibility: (Boolean) -> Unit = {}
 ) {
     var visible by remember { mutableStateOf(false) }
     val trailing: (@Composable () -> Unit)? = if (password) {
         {
-            TextButton(onClick = { visible = !visible }) {
-                Text(if (visible) "Sembunyi" else "Lihat", color = Red)
+            androidx.compose.material3.IconButton(onClick = { visible = !visible; onPasswordVisibility(visible) }) {
+                Icon(if (visible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                    contentDescription = if (visible) "Sembunyikan password" else "Tampilkan password",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     } else null
@@ -139,10 +150,13 @@ private fun AuthButton(text: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun LoginScreen(onLogin: (String) -> Unit, onGoRegister: () -> Unit) {
+fun LoginScreen(onLogin: (String) -> Unit) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var peeking by remember { mutableStateOf(false) }
+    val floatTransition = rememberInfiniteTransition(label = "login mascot float")
+    val floatY by floatTransition.animateFloat(-5f, 5f, infiniteRepeatable(tween(1300), RepeatMode.Reverse), label = "float")
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         AuthHeader("KasMate", "Keuangan kelas, lebih transparan")
@@ -156,7 +170,13 @@ fun LoginScreen(onLogin: (String) -> Unit, onGoRegister: () -> Unit) {
                 Text("Selamat datang kembali", fontSize = 21.sp, fontWeight = FontWeight.Bold)
                 Text("Masuk untuk melihat tagihan dan kabar kas kelas.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 AuthField(username, { username = it }, "Username", icon = Icons.Default.Person)
-                AuthField(password, { password = it }, "Password", password = true, icon = Icons.Default.Lock)
+                Box(Modifier.fillMaxWidth().height(108.dp), contentAlignment = Alignment.Center) {
+                    Image(painter = painterResource(if (password.isNotEmpty() && !peeking) R.drawable.kasmate_mascot_sad else R.drawable.kasmate_mascot_neutral),
+                        contentDescription = "Maskot KasMate", contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(104.dp).graphicsLayer { translationY = floatY })
+                }
+                AuthField(password, { password = it }, "Password", password = true, icon = Icons.Default.Lock,
+                    onPasswordVisibility = { peeking = it })
                 error?.let { Text(it, color = MaterialTheme.colorScheme.tertiary) }
                 AuthButton("MASUK") {
                     error = if (username.isBlank() || password.isBlank()) {
@@ -164,11 +184,22 @@ fun LoginScreen(onLogin: (String) -> Unit, onGoRegister: () -> Unit) {
                     } else null
                     if (error == null) onLogin(username.trim().substringBefore('@').substringBefore(' '))
                 }
-                TextButton(onClick = onGoRegister, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                    Text("Belum punya akun? Daftar", color = Red, fontWeight = FontWeight.Bold)
-                }
+                Text("Gunakan akun siswa yang diberikan sekolah", modifier = Modifier.align(Alignment.CenterHorizontally), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             }
         }
+    }
+}
+
+@Composable
+fun WelcomeScreen(onGetStarted: () -> Unit) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(26.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Spacer(Modifier.weight(.7f))
+        Image(painterResource(R.drawable.kasmate_finance_wallet), "KasMate", Modifier.fillMaxWidth().height(270.dp), contentScale = ContentScale.Fit)
+        Spacer(Modifier.height(28.dp))
+        Text("Welcome to KasMate", fontSize = 29.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onBackground)
+        Text("Kelola kas kelas dengan lebih transparan, praktis, dan tenang.", modifier = Modifier.padding(top = 10.dp, bottom = 28.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+        AuthButton("GET STARTED", onGetStarted)
+        Spacer(Modifier.weight(1f))
     }
 }
 
