@@ -1,5 +1,6 @@
 package com.smktel.kasmate.ui
 
+import android.net.Uri
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
@@ -24,7 +25,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.asImageBitmap
 import android.graphics.BitmapFactory
-import android.net.Uri
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,8 +38,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.smktel.kasmate.data.*
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
@@ -56,18 +54,23 @@ fun tanggal(ms: Long): String = SimpleDateFormat("d MMM yyyy", Locale("id", "ID"
 @Composable
 fun HomeScreen(
     userName: String,
+    className: String,
+    studentNis: String,
+    summary: KasSummary,
+    paymentRequests: List<StudentPaymentRequest>,
+    onSubmitPayment: (Long, String, Uri?, (String?) -> Unit) -> Unit,
+    onRefresh: () -> Unit,
     darkMode: Boolean,
     onDarkModeChange: (Boolean) -> Unit,
     language: AppLanguage,
     onLanguageChange: (AppLanguage) -> Unit,
-    vm: KasViewModel = viewModel()
+    onLogout: () -> Unit
 ) {
-    val s by vm.state.collectAsStateWithLifecycle()
+    val s = summary
     val context = LocalContext.current
     val calendarPrefs = remember(context) { context.getSharedPreferences("kasmate_preferences", android.content.Context.MODE_PRIVATE) }
     val calendarNotes = remember(calendarPrefs) { mutableStateListOf<CalendarStickyNote>().apply { addAll(readCalendarNotes(calendarPrefs)) } }
     var page by remember { mutableStateOf(AppPage.HOME) }
-    var paymentRequests by remember { mutableStateOf(emptyList<DemoPaymentRequest>()) }
     var disputeTickets by remember { mutableStateOf(emptyList<DemoDispute>()) }
     var calendarOpen by remember { mutableStateOf(false) }
     var profileImageUri by remember { mutableStateOf(calendarPrefs.getString("profile_image_uri", null)) }
@@ -75,11 +78,34 @@ fun HomeScreen(
         if (uri != null) { profileImageUri = uri.toString(); calendarPrefs.edit().putString("profile_image_uri", uri.toString()).apply() }
     }
     var paymentCelebration by remember { mutableStateOf(false) }
+    var observedPaymentStatuses by remember { mutableStateOf<Map<Long, String>?>(null) }
+    var rejectedPaymentNotices by remember { mutableStateOf(emptyList<StudentPaymentRequest>()) }
     val english = language == AppLanguage.ENGLISH
-    val startOfToday = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
-    val overdueBills = s.myBills.filter { it.status == PaymentStatus.BELUM && it.dueDateMillis < startOfToday }
-    val overdueAmount = overdueBills.sumOf { it.amount }
-    val maxOverdueDays = overdueBills.maxOfOrNull { ((startOfToday - it.dueDateMillis) / 86_400_000L).toInt().coerceAtLeast(1) } ?: 0
+    LaunchedEffect(paymentRequests) {
+        val previousStatuses = observedPaymentStatuses
+        if (previousStatuses != null) {
+            // A request can be submitted and rejected between the app's 60-second refreshes.
+            val newlyRejected = paymentRequests.filter { request ->
+                request.status == "REJECTED" &&
+                    (previousStatuses[request.id] == "PENDING" || request.id !in previousStatuses)
+            }
+            rejectedPaymentNotices = (rejectedPaymentNotices + newlyRejected).distinctBy { it.id }
+        }
+        observedPaymentStatuses = paymentRequests.associate { it.id to it.status }
+    }
+    val startOfToday = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+    val overdueBills = s.myBills.filter {
+        it.amountDue > 0 && it.status != PaymentStatus.PROSES && it.dueDateMillis < startOfToday
+    }
+    val overdueAmount = overdueBills.sumOf { it.amountDue }
+    val maxOverdueDays = overdueBills.maxOfOrNull {
+        ((startOfToday - it.dueDateMillis) / 86_400_000L).toInt().coerceAtLeast(1)
+    } ?: 0
     LaunchedEffect(overdueAmount, maxOverdueDays) {
         calendarPrefs.edit().putLong("overdue_amount", overdueAmount).putInt("overdue_days", maxOverdueDays).apply()
     }
@@ -114,16 +140,59 @@ fun HomeScreen(
     ) { padding ->
         Crossfade(targetState = page, modifier = Modifier.padding(padding), label = "page transition") { currentPage ->
             when (currentPage) {
-                AppPage.HOME -> Dashboard(s, english, userName, paymentCelebration, { page = AppPage.SETTINGS }, { page = AppPage.PAYMENTS }, { page = AppPage.ASSISTANT })
+                AppPage.HOME -> Dashboard(s, english, userName, paymentCelebration, onRefresh, { page = AppPage.SETTINGS }, { page = AppPage.PAYMENTS }, { page = AppPage.ASSISTANT })
                 AppPage.PAYMENTS -> StudentPaymentScreen(s, english, paymentRequests, disputeTickets,
-                    onRequest = { paymentRequests = paymentRequests + it; paymentCelebration = true },
+                    onSubmitPayment = { billId, method, proofUri, complete ->
+                        onSubmitPayment(billId, method, proofUri) { error ->
+                            if (error == null) paymentCelebration = true
+                            complete(error)
+                        }
+                    },
                     onDispute = { disputeTickets = disputeTickets + it })
                 AppPage.LEDGER -> StudentLedgerScreen(s, english)
                 AppPage.ASSISTANT -> KasMateAssistantScreen(s, userName, english)
                 AppPage.SETTINGS -> SettingsPage(darkMode, onDarkModeChange, language, onLanguageChange, english) { page = AppPage.PROFILE }
-                AppPage.PROFILE -> ProfilePage(english, userName, profileImageUri) { profilePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+                AppPage.PROFILE -> ProfilePage(
+                    english = english,
+                    userName = userName,
+                    className = className,
+                    studentNis = studentNis,
+                    imageUri = profileImageUri,
+                    onPickImage = {
+                        profilePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    onLogout = onLogout
+                )
             }
         }
+    }
+    rejectedPaymentNotices.firstOrNull()?.let { rejected ->
+        val closeRejectionNotice = { rejectedPaymentNotices = rejectedPaymentNotices.drop(1) }
+        AlertDialog(
+            onDismissRequest = closeRejectionNotice,
+            icon = { Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = Red) },
+            title = { Text(if (english) "Payment request rejected" else "Permintaan pembayaran ditolak") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(rejected.billName, fontWeight = FontWeight.Bold)
+                    Text(
+                        rejected.reviewNote.ifBlank {
+                            if (english) "Ask your class administrator for details." else "Hubungi admin kelas untuk mengetahui alasannya."
+                        }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { closeRejectionNotice(); page = AppPage.PAYMENTS }) {
+                    Text(if (english) "View payment requests" else "Lihat pembayaran")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = closeRejectionNotice) {
+                    Text(if (english) "Close" else "Tutup")
+                }
+            }
+        )
     }
     if (calendarOpen) {
         CalendarOverlay(
@@ -162,7 +231,7 @@ private fun navColors() = NavigationBarItemDefaults.colors(
 )
 
 @Composable
-private fun Dashboard(s: KasSummary, english: Boolean, userName: String, paymentSubmitted: Boolean, openSettings: () -> Unit, openPayments: () -> Unit, openAssistant: () -> Unit) {
+private fun Dashboard(s: KasSummary, english: Boolean, userName: String, paymentSubmitted: Boolean, refreshData: () -> Unit, openSettings: () -> Unit, openPayments: () -> Unit, openAssistant: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
             Row(Modifier.fillMaxWidth().padding(top = 22.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -170,12 +239,15 @@ private fun Dashboard(s: KasSummary, english: Boolean, userName: String, payment
                     Text("KASMATE", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, letterSpacing = 2.sp, fontSize = 12.sp)
                     Text(greeting(userName, english), fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
                 }
-                IconButton(onClick = openSettings) { Icon(Icons.Default.Tune, if (english) "Settings" else "Pengaturan") }
+                Row {
+                    IconButton(onClick = refreshData) { Icon(Icons.Default.Refresh, if (english) "Refresh account" else "Muat ulang data") }
+                    IconButton(onClick = openSettings) { Icon(Icons.Default.Tune, if (english) "Settings" else "Pengaturan") }
+                }
             }
         }
         item { StudentStatusCard(s, english, openPayments) }
         item {
-            val unpaid = s.myBills.firstOrNull { it.status == PaymentStatus.BELUM }
+            val unpaid = s.myBills.firstOrNull { it.amountDue > 0 && it.status != PaymentStatus.PROSES }
             val today = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
             val daysLate = unpaid?.takeIf { it.dueDateMillis < today }?.let { ((today - it.dueDateMillis) / 86_400_000L).toInt().coerceAtLeast(1) } ?: 0
             val mood = when {
@@ -191,15 +263,15 @@ private fun Dashboard(s: KasSummary, english: Boolean, userName: String, payment
                 MascotMood.SAD -> if (english) "A bill of ${rupiah(unpaid?.amount ?: 0)} is overdue. Let's settle it together." else "Yah, kas ${rupiah(unpaid?.amount ?: 0)} terlewat. Yuk, bereskan bareng-bareng!"
                 MascotMood.NEUTRAL -> if (english) "A little reminder: pay class dues before the due date." else "Ingat bayar uang kas sebelum tanggal jatuh tempo, ya!"
                 MascotMood.HAPPY -> if (english) "Wonderful, your dues are paid! ${financeFunFact(true)}" else "Yeay, kasmu lunas! ${financeFunFact(false)}"
-                MascotMood.EXCITED -> if (english) "Yay! Your payment proof is sent. I'll cheer while it gets reviewed!" else "Yeay! Bukti bayarmu terkirim. Aku ikut senang sambil menunggu konfirmasi!"
+                MascotMood.EXCITED -> if (english) "Your payment request was sent. The bill updates after admin approval." else "Permintaan pembayaran terkirim. Tagihan diperbarui setelah disetujui admin."
             }
             KasMateMascotBanner(mood, message)
         }
         item { BalanceCard(s.totalBalance, english) }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MiniStat(Modifier.weight(1f), "↗", if (english) "Income" else "Pemasukan", rupiah(185_000), Color(0xFF168A62))
-                MiniStat(Modifier.weight(1f), "↘", if (english) "Expenses" else "Pengeluaran", rupiah(42_000), MaterialTheme.colorScheme.primary)
+                MiniStat(Modifier.weight(1f), "↗", if (english) "Income" else "Pemasukan", rupiah(s.totalIncome), Color(0xFF168A62))
+                MiniStat(Modifier.weight(1f), "↘", if (english) "Expenses" else "Pengeluaran", rupiah(s.totalExpenses), MaterialTheme.colorScheme.primary)
             }
         }
         item { ChartCard(english) }
@@ -266,7 +338,7 @@ private fun greeting(userName: String, english: Boolean): String {
 
 @Composable
 private fun StudentStatusCard(summary: KasSummary, english: Boolean, onClick: () -> Unit) {
-    val unpaid = summary.myBills.firstOrNull { it.status == PaymentStatus.BELUM }
+    val unpaid = summary.myBills.firstOrNull { it.amountDue > 0 && it.status != PaymentStatus.PROSES }
     StudentPanel(Modifier.clickable(onClick = onClick)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
             Box(Modifier.size(40.dp).clip(CircleShape).background(if (unpaid == null) Color(0xFF168A62).copy(alpha = .12f) else Red.copy(alpha = .1f)), contentAlignment = Alignment.Center) {
@@ -274,7 +346,7 @@ private fun StudentStatusCard(summary: KasSummary, english: Boolean, onClick: ()
             }
             Column(Modifier.weight(1f)) {
                 Text(if (unpaid == null) if (english) "Kas this month is paid" else "Kas bulan ini lunas" else if (english) "Payment due this month" else "Kas bulan ini belum lunas", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text(unpaid?.let { "${it.title} · ${rupiah(it.amount)}" } ?: if (english) "You're all caught up" else "Kamu tidak memiliki tunggakan", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Text(unpaid?.let { "${it.title} · ${rupiah(it.amountDue)}" } ?: if (english) "You're all caught up" else "Kamu tidak memiliki tunggakan", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
             }
             Icon(Icons.Default.ChevronRight, null, tint = Red)
         }
@@ -386,7 +458,7 @@ private fun BillRow(b: Bill, english: Boolean) {
             Box(Modifier.size(42.dp).clip(CircleShape).background(Red.copy(alpha = .12f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Receipt, null, tint = Red) }
             Column { Text(b.title, fontWeight = FontWeight.Bold, fontSize = 15.sp); Text("${if (english) "Due" else "Tenggat"} ${tanggal(b.dueDateMillis)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
-        Column(horizontalAlignment = Alignment.End) { Text(rupiah(b.amount), color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold); Text(if (paid) if (english) "PAID" else "LUNAS" else if (english) "UNPAID" else "BELUM", color = if (paid) Color(0xFF168A62) else Red, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp) }
+        Column(horizontalAlignment = Alignment.End) { Text(rupiah(if (paid) b.amountPaid else b.amountDue), color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold); Text(if (paid) if (english) "PAID" else "LUNAS" else if (b.status == PaymentStatus.SEBAGIAN) if (english) "PARTIAL" else "SEBAGIAN" else if (english) "UNPAID" else "BELUM", color = if (paid) Color(0xFF168A62) else Red, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp) }
     }
 }
 
@@ -449,7 +521,15 @@ private fun SettingCard(title: String, content: @Composable ColumnScope.() -> Un
 }
 
 @Composable
-private fun ProfilePage(english: Boolean, userName: String, imageUri: String?, onPickImage: () -> Unit) {
+private fun ProfilePage(
+    english: Boolean,
+    userName: String,
+    className: String,
+    studentNis: String,
+    imageUri: String?,
+    onPickImage: () -> Unit,
+    onLogout: () -> Unit
+) {
     val context = LocalContext.current
     val displayName = userName.trim().ifBlank { if (english) "Student" else "Siswa" }
     val avatar = remember(imageUri) { runCatching { imageUri?.let { context.contentResolver.openInputStream(Uri.parse(it))?.use(BitmapFactory::decodeStream) } }.getOrNull() }
@@ -462,12 +542,18 @@ private fun ProfilePage(english: Boolean, userName: String, imageUri: String?, o
         }
         Text(if (english) "Tap photo to change" else "Ketuk foto untuk mengganti", color = Red, fontSize = 12.sp, modifier = Modifier.clickable(onClick = onPickImage))
         Text(displayName, fontSize = 21.sp, fontWeight = FontWeight.Bold)
-        Text(if (english) "Student · Class XI PPLG 2" else "Siswa · Kelas XI PPLG 2", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(if (english) "Student · ${className.ifBlank { "No class" }}" else "Siswa · Kelas ${className.ifBlank { "Belum ditetapkan" }}", color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(8.dp))
         SettingCard(if (english) "PERSONAL INFORMATION" else "INFORMASI PRIBADI") {
             ProfileLine(if (english) "Full name" else "Nama lengkap", displayName)
+            if (studentNis.isNotBlank()) ProfileLine("NIS", studentNis)
             ProfileLine(if (english) "Role" else "Peran", if (english) "Student" else "Siswa")
-            ProfileLine("Kelas", "XI PPLG 2")
+            ProfileLine("Kelas", className.ifBlank { if (english) "Not assigned" else "Belum ditetapkan" })
+        }
+        Button(onClick = onLogout, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Red)) {
+            Icon(Icons.Default.Logout, null)
+            Spacer(Modifier.width(8.dp))
+            Text(if (english) "Sign out" else "Keluar")
         }
     }
 }
